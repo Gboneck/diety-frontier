@@ -1,86 +1,56 @@
-import { useCallback, useEffect, useRef, useState } from "react"
-import { createInitialGameState, tickGameState } from "../game/simulation"
-import type { GamePhase, GameState } from "../game/types"
+import { useCallback, useMemo, useState } from "react"
+import { AnyPlayerAction, GameState, PlayerId } from "../game/types"
+import { createInitialGameState, reduceGameState } from "../game/simulation"
 
-interface UseLocalGame {
-  gameState: GameState
-  start: () => void
-  pause: () => void
-  reset: () => void
-  isRunning: boolean
+export interface UseLocalGameOptions {
+  gameId?: string // for now we can default to a fixed id
+  localPlayerId?: PlayerId
 }
 
-export function useLocalGame(): UseLocalGame {
-  const [gameState, setGameState] = useState<GameState>(() => createInitialGameState())
-  const animationFrameRef = useRef<number | null>(null)
-  const lastTickTimeRef = useRef<number | null>(null)
-  const gameStateRef = useRef<GameState>(gameState)
+export interface UseLocalGameResult {
+  game: GameState
+  localPlayerId: PlayerId
+  dispatchAction: (partial: Omit<AnyPlayerAction, "id">) => void
+  resetGame: () => void
+}
 
-  useEffect(() => {
-    gameStateRef.current = gameState
-  }, [gameState])
+/**
+ * Local-only game state hook for development.
+ * Later we will replace this with a realtime-backed hook that:
+ * - sends actions over the network
+ * - applies them on a host client
+ * - receives authoritative state
+ */
+export function useLocalGame(
+  options: UseLocalGameOptions = {},
+): UseLocalGameResult {
+  const gameId = options.gameId ?? "local-game"
+  const initialState = useMemo(() => createInitialGameState(gameId), [gameId])
 
-  const stepSimulation = useCallback(
-    (timestamp: number) => {
-      const latestState = gameStateRef.current
-      if (latestState.phase !== "RUNNING") {
-        animationFrameRef.current = null
-        lastTickTimeRef.current = null
-        return
+  const [game, setGame] = useState<GameState>(initialState)
+
+  const localPlayerId: PlayerId = options.localPlayerId ?? "PLAYER_1"
+
+  const dispatchAction = useCallback(
+    (partial: Omit<AnyPlayerAction, "id">) => {
+      const action: AnyPlayerAction = {
+        ...partial,
+        id: crypto.randomUUID ? crypto.randomUUID() : `act_${Date.now()}`,
       }
 
-      const last = lastTickTimeRef.current ?? timestamp
-      const elapsed = timestamp - last
-      lastTickTimeRef.current = timestamp
-
-      setGameState((prev) => tickGameState(prev, elapsed))
-      animationFrameRef.current = requestAnimationFrame(stepSimulation)
+      setGame((prev) => reduceGameState(prev, action))
     },
     [],
   )
 
-  const start = useCallback(() => {
-    setGameState((prev) => {
-      if (prev.phase === "RUNNING") return prev
-      return { ...prev, phase: "RUNNING" as GamePhase }
-    })
-
-    if (!animationFrameRef.current) {
-      lastTickTimeRef.current = null
-      animationFrameRef.current = requestAnimationFrame(stepSimulation)
-    }
-  }, [stepSimulation])
-
-  const pause = useCallback(() => {
-    setGameState((prev) => ({
-      ...prev,
-      phase: prev.phase === "RUNNING" ? "LOBBY" : prev.phase,
-    }))
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current)
-      animationFrameRef.current = null
-    }
-    lastTickTimeRef.current = null
-  }, [])
-
-  const reset = useCallback(() => {
-    pause()
-    setGameState(createInitialGameState())
-  }, [pause])
-
-  useEffect(() => {
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
-      }
-    }
-  }, [])
+  const resetGame = useCallback(() => {
+    setGame(createInitialGameState(gameId))
+  }, [gameId])
 
   return {
-    gameState,
-    start,
-    pause,
-    reset,
-    isRunning: gameState.phase === "RUNNING",
+    game,
+    localPlayerId,
+    dispatchAction,
+    resetGame,
   }
 }
