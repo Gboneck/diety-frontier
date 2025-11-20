@@ -10,6 +10,10 @@ import type {
   PlaceStartingSettlementPayload,
   TickPayload,
   AllocateRolesPayload,
+  RaidSettlementPayload,
+  UseDeityPowerPayload,
+  DeityPowerType,
+  SettlementBuff,
 } from "./types"
 
 // Utility to create ids (simple for now; we can swap to uuid later)
@@ -30,6 +34,22 @@ function findTileById(state: GameState, tileId: string): Tile | undefined {
 
 function findSettlementById(state: GameState, settlementId: string) {
   return state.settlements.find((s) => s.id === settlementId)
+}
+
+function createBuff(
+  settlementId: string,
+  owner: PlayerId,
+  type: DeityPowerType,
+  currentTimeMs: number,
+  durationMs: number,
+): SettlementBuff {
+  return {
+    id: nextId(),
+    settlementId,
+    owner,
+    type,
+    expiresAtMs: currentTimeMs + durationMs,
+  }
 }
 
 function computeRoleCountsFromPercents(
@@ -112,13 +132,14 @@ export function createInitialGameState(gameId: string): GameState {
     phase: "LOBBY",
     currentTimeMs: 0,
     winnerId: undefined,
+    buffs: [],
   }
 }
 
-// For now, just create a tiny axial grid (radius 2) with some basic terrain
+// For now, just create a tiny axial grid (radius 3) with some basic terrain
 function createSmallHexMap(): Tile[] {
   const tiles: Tile[] = []
-  const radius = 2
+  const radius = 3 // expanded map
 
   for (let q = -radius; q <= radius; q++) {
     for (let r = -radius; r <= radius; r++) {
@@ -139,7 +160,8 @@ function createSmallHexMap(): Tile[] {
 
 function pickTerrainForCoord(q: number, r: number): TerrainType {
   const hash = (q * 31 + r * 17 + 9999) % 100
-  if (hash < 40) return "Field"
+  if (hash < 25) return "Field"
+  if (hash < 40) return "FertileField"
   if (hash < 65) return "Forest"
   if (hash < 85) return "Mountain"
   return "Water"
@@ -193,8 +215,14 @@ export function reduceGameState(
       const payload = action.payload as TickPayload | undefined
       const deltaMs = payload?.deltaMs ?? 1000
 
-      // Always move logical time forward
-      state.currentTimeMs = state.currentTimeMs + deltaMs
+      const nextTime = state.currentTimeMs + deltaMs
+      state.currentTimeMs = nextTime
+
+      // Remove expired buffs
+      const activeBuffs = (state.buffs ?? []).filter(
+        (buff) => buff.expiresAtMs > nextTime,
+      )
+      state.buffs = activeBuffs
 
       // Only run economy if the game is actually running
       if (state.phase !== "RUNNING") {
@@ -219,29 +247,53 @@ export function reduceGameState(
         const workers = settlement.workers
         const worshippers = settlement.worshippers
 
+        const buffsForSettlement = state.buffs.filter(
+          (b) => b.settlementId === settlement.id,
+        )
+
+        let workerMultiplier = 1
+        let worshipperMultiplier = 1
+
+        for (const buff of buffsForSettlement) {
+          if (buff.type === "BLESSED_HARVEST") {
+            workerMultiplier *= 2
+          } else if (buff.type === "INSPIRED_WORSHIP") {
+            worshipperMultiplier *= 2
+          }
+        }
+
         // Workers gather from the terrain of their tile
         if (workers > 0) {
+          let foodGain = 0
+          let woodGain = 0
+          let stoneGain = 0
+
           switch (tile.terrain) {
             case "Field":
-              bucket.Food += workers
+              foodGain = workers
               break
             case "FertileField":
-              bucket.Food += workers * 2
+              foodGain = workers * 2
               break
             case "Forest":
-              bucket.Wood += workers
+              woodGain = workers
               break
             case "Mountain":
-              bucket.Stone += workers
+              stoneGain = workers
               break
             default:
               break
           }
+
+          bucket.Food += foodGain * workerMultiplier
+          bucket.Wood += woodGain * workerMultiplier
+          bucket.Stone += stoneGain * workerMultiplier
         }
 
         // Worshippers generate belief
         if (worshippers > 0) {
-          bucket.Belief += worshippers
+          const beliefGain = worshippers * worshipperMultiplier
+          bucket.Belief += beliefGain
         }
       }
 
@@ -396,6 +448,200 @@ export function reduceGameState(
       }
 
       // Advance time a bit (optional)
+      state.currentTimeMs = Math.max(state.currentTimeMs, action.clientTimeMs)
+
+      return state
+    }
+
+    case "USE_DEITY_POWER": {
+      const payload = action.payload as UseDeityPowerPayload | undefined
+      if (!payload) return state
+
+      const settlement = findSettlementById(state, payload.settlementId)
+      if (!settlement) return state
+
+      // Must own the settlement
+      if (settlement.owner !== action.playerId) {
+        return state
+      }
+
+      const player = getPlayer(state, action.playerId)
+      if (!player) return state
+
+      let cost = 0
+      const durationMs = 15000
+
+      if (payload.power === "BLESSED_HARVEST") {
+        cost = 10
+      } else if (payload.power === "INSPIRED_WORSHIP") {
+        cost = 15
+      }
+
+      if (player.belief < cost) {
+        return state
+      }
+
+      const updatedPlayers = state.players.map((p) => {
+        if (p.id !== player.id) return p
+        const newResources: Record<ResourceType, number> = {
+          ...p.resources,
+          Belief: (p.resources.Belief ?? 0) - cost,
+        }
+        const newBelief = newResources.Belief ?? 0
+        return {
+          ...p,
+          resources: newResources,
+          belief: newBelief,
+          maxBeliefEver: Math.max(p.maxBeliefEver, newBelief),
+        }
+      })
+
+      const newBuff = createBuff(
+        settlement.id,
+        settlement.owner,
+        payload.power,
+        state.currentTimeMs,
+        durationMs,
+      )
+
+      state = {
+        ...state,
+        players: updatedPlayers,
+        buffs: [...(state.buffs ?? []), newBuff],
+      }
+
+      state.currentTimeMs = Math.max(state.currentTimeMs, action.clientTimeMs)
+
+      return state
+    }
+
+    case "RAID_SETTLEMENT": {
+      const payload = action.payload as RaidSettlementPayload | undefined
+      if (!payload) return state
+
+      const from = findSettlementById(state, payload.fromSettlementId)
+      const target = findSettlementById(state, payload.targetSettlementId)
+      if (!from || !target) return state
+
+      // Must own the attacking settlement
+      if (from.owner !== action.playerId) {
+        return state
+      }
+
+      // Cannot raid your own settlement
+      if (from.owner === target.owner) {
+        return state
+      }
+
+      const baseDefenders = from.defenders
+      if (baseDefenders <= 0) {
+        return state
+      }
+
+      const percent = Math.max(0, Math.min(100, payload.raiderPercent))
+      let raiderCount = Math.floor((baseDefenders * percent) / 100)
+      if (raiderCount <= 0) {
+        raiderCount = 1
+      }
+      if (raiderCount > baseDefenders) {
+        raiderCount = baseDefenders
+      }
+
+      const attackPower = raiderCount
+      const defensePower = target.defenders
+
+      let attackerLosses = 0
+      let defenderLosses = 0
+      let populationLoss = 0
+      let loot: Record<ResourceType, number> = emptyResourceRecord()
+
+      if (attackPower <= defensePower) {
+        attackerLosses = attackPower
+        defenderLosses = attackPower
+      } else {
+        defenderLosses = defensePower
+        attackerLosses = defensePower
+
+        const overkill = attackPower - defensePower
+
+        populationLoss = Math.min(target.population, overkill)
+
+        const lootFactor = 0.2
+
+        const attackerPlayer = getPlayer(state, from.owner)
+        const defenderPlayer = getPlayer(state, target.owner)
+        if (attackerPlayer && defenderPlayer) {
+          const updatedPlayers: Player[] = state.players.map((p) => {
+            if (p.id === attackerPlayer.id) {
+              const newResources: Record<ResourceType, number> = {
+                ...p.resources,
+              }
+              ;(Object.keys(newResources) as ResourceType[]).forEach((res) => {
+                const defRes = defenderPlayer.resources[res] ?? 0
+                const take = Math.floor(defRes * lootFactor)
+                loot[res] = take
+                newResources[res] = (newResources[res] ?? 0) + take
+              })
+              const newBelief = newResources.Belief ?? 0
+              return {
+                ...p,
+                resources: newResources,
+                belief: newBelief,
+                maxBeliefEver: Math.max(p.maxBeliefEver, newBelief),
+              }
+            } else if (p.id === defenderPlayer.id) {
+              const newResources: Record<ResourceType, number> = {
+                ...p.resources,
+              }
+              ;(Object.keys(newResources) as ResourceType[]).forEach((res) => {
+                const give = loot[res] ?? 0
+                newResources[res] = Math.max(
+                  0,
+                  (newResources[res] ?? 0) - give,
+                )
+              })
+              const newBelief = newResources.Belief ?? 0
+              return {
+                ...p,
+                resources: newResources,
+                belief: newBelief,
+                maxBeliefEver: Math.max(p.maxBeliefEver, newBelief),
+              }
+            }
+            return p
+          })
+
+          state.players = updatedPlayers
+        }
+      }
+
+      const survivorsAttacker = Math.max(0, raiderCount - attackerLosses)
+      const newFromDefenders = baseDefenders - raiderCount + survivorsAttacker
+      const newTargetDefenders = Math.max(0, target.defenders - defenderLosses)
+      const newTargetPopulation = Math.max(0, target.population - populationLoss)
+
+      const updatedSettlements = state.settlements.map((s) => {
+        if (s.id === from.id) {
+          return {
+            ...s,
+            defenders: newFromDefenders,
+          }
+        }
+        if (s.id === target.id) {
+          return {
+            ...s,
+            defenders: newTargetDefenders,
+            population: newTargetPopulation,
+          }
+        }
+        return s
+      })
+
+      state = {
+        ...state,
+        settlements: updatedSettlements,
+      }
+
       state.currentTimeMs = Math.max(state.currentTimeMs, action.clientTimeMs)
 
       return state

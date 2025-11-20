@@ -10,6 +10,8 @@ export type TerrainType =
 
 export type PlayerId = "PLAYER_1" | "PLAYER_2"
 
+export type DeityPowerType = "BLESSED_HARVEST" | "INSPIRED_WORSHIP"
+
 // Axial hex coordinates (for a hex grid)
 export interface HexCoord {
   q: number
@@ -45,6 +47,14 @@ export interface Player {
   maxBeliefEver: number
 }
 
+export interface SettlementBuff {
+  id: string
+  settlementId: string
+  owner: PlayerId
+  type: DeityPowerType
+  expiresAtMs: number // game.currentTimeMs when the buff expires
+}
+
 // Overall game phases
 export type GamePhase = "LOBBY" | "RUNNING" | "GAME_OVER"
 
@@ -57,6 +67,7 @@ export interface GameState {
   phase: GamePhase
   currentTimeMs: number // logical time for real-time simulation
   winnerId?: PlayerId
+  buffs: SettlementBuff[]
 }
 
 // Action types for real-time play
@@ -66,6 +77,8 @@ export type ActionType =
   | "BUILD_SETTLEMENT"
   | "ALLOCATE_ROLES"
   | "TICK"
+  | "RAID_SETTLEMENT"
+  | "USE_DEITY_POWER"
 
 export interface PlayerAction<TPayload = unknown> {
   id: string // client-generated UUID
@@ -97,12 +110,26 @@ export interface TickPayload {
   deltaMs: number
 }
 
+export interface RaidSettlementPayload {
+  fromSettlementId: string
+  targetSettlementId: string
+  // Percent of defenders from the attacking settlement to commit to the raid (0–100).
+  raiderPercent: number
+}
+
+export interface UseDeityPowerPayload {
+  power: DeityPowerType
+  settlementId: string
+}
+
 // Union of payloads
 export type AnyActionPayload =
   | PlaceStartingSettlementPayload
   | BuildSettlementPayload
   | AllocateRolesPayload
   | TickPayload
+  | RaidSettlementPayload
+  | UseDeityPowerPayload
   | undefined
 
 export type AnyPlayerAction = PlayerAction<AnyActionPayload>
