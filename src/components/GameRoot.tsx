@@ -3,9 +3,14 @@ import { HexBoard } from "./HexBoard"
 import { useWsGame } from "../state/useWsGame"
 import type {
   AllocateRolesPayload,
+  DeityPowerType,
   PlaceStartingSettlementPayload,
+  RaidSettlementPayload,
+  UseDeityPowerPayload,
 } from "../game/types"
 import { SettlementRolesPanel } from "./SettlementRolesPanel"
+import { CombatPanel } from "./CombatPanel"
+import { DeityPowersPanel } from "./DeityPowersPanel"
 
 export const GameRoot: React.FC = () => {
   const {
@@ -58,6 +63,47 @@ export const GameRoot: React.FC = () => {
 
       dispatchActionForLocalPlayer({
         type: "ALLOCATE_ROLES",
+        payload,
+        clientTimeMs: performance.now(),
+      })
+    },
+    [game, localPlayerId, dispatchActionForLocalPlayer],
+  )
+
+  const handleRaid = useCallback(
+    (args: {
+      fromSettlementId: string
+      targetSettlementId: string
+      raiderPercent: number
+    }) => {
+      if (!game || !localPlayerId) return
+
+      const payload: RaidSettlementPayload = {
+        fromSettlementId: args.fromSettlementId,
+        targetSettlementId: args.targetSettlementId,
+        raiderPercent: args.raiderPercent,
+      }
+
+      dispatchActionForLocalPlayer({
+        type: "RAID_SETTLEMENT",
+        payload,
+        clientTimeMs: performance.now(),
+      })
+    },
+    [game, localPlayerId, dispatchActionForLocalPlayer],
+  )
+
+  const handleCastPower = useCallback(
+    (args: { power: DeityPowerType; settlementId: string }) => {
+      if (!game || !localPlayerId) return
+
+      const payload: UseDeityPowerPayload = {
+        power: args.power,
+        settlementId: args.settlementId,
+      }
+
+      dispatchActionForLocalPlayer({
+        type: "USE_DEITY_POWER",
         payload,
         clientTimeMs: performance.now(),
       })
@@ -241,6 +287,18 @@ export const GameRoot: React.FC = () => {
         game={game}
         localPlayerId={localPlayerId}
         onUpdateRoles={handleUpdateRoles}
+      />
+
+      <CombatPanel
+        game={game}
+        localPlayerId={localPlayerId}
+        onRaid={handleRaid}
+      />
+
+      <DeityPowersPanel
+        game={game}
+        localPlayerId={localPlayerId}
+        onCastPower={handleCastPower}
       />
 
       <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
