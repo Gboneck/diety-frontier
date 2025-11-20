@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react"
-import { AnyPlayerAction, GameState, PlayerId } from "../game/types"
+import type { AnyPlayerAction, GameState, PlayerId } from "../game/types"
 import { createInitialGameState, reduceGameState } from "../game/simulation"
 
 export interface UseLocalGameOptions {

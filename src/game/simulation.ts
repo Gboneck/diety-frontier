@@ -1,4 +1,4 @@
-import {
+import type {
   GameState,
   Player,
   PlayerId,
@@ -6,11 +6,24 @@ import {
   TerrainType,
   Tile,
   AnyPlayerAction,
+  PlaceStartingSettlementPayload,
 } from "./types"
 
 // Utility to create ids (simple for now; we can swap to uuid later)
 let idCounter = 0
 export const nextId = () => `id_${idCounter++}`
+
+function getPlayer(state: GameState, playerId: PlayerId): Player | undefined {
+  return state.players.find((p) => p.id === playerId)
+}
+
+function countSettlementsForPlayer(state: GameState, playerId: PlayerId): number {
+  return state.settlements.filter((s) => s.owner === playerId).length
+}
+
+function findTileById(state: GameState, tileId: string): Tile | undefined {
+  return state.tiles.find((t) => t.id === tileId)
+}
 
 /**
  * Create a small initial map and players.
@@ -98,36 +111,118 @@ export function reduceGameState(
   let state: GameState = { ...prev }
 
   switch (action.type) {
-    case "NOOP":
+    case "NOOP": {
       // Debug action – do nothing except advance logical time slightly
       state.currentTimeMs = Math.max(
         state.currentTimeMs,
         action.clientTimeMs,
       )
       return state
+    }
 
-    case "TICK":
+    case "TICK": {
       // Later we can use this to run periodic simulation (growth, belief, etc.)
       state.currentTimeMs = Math.max(
         state.currentTimeMs,
         action.clientTimeMs,
       )
       return state
+    }
 
-    case "PLACE_STARTING_SETTLEMENT":
-      // TODO: implement placement rules
-      // For now, just return state unchanged.
+    case "PLACE_STARTING_SETTLEMENT": {
+      if (state.phase !== "LOBBY") {
+        // Starting settlements only during lobby
+        return state
+      }
+
+      const player = getPlayer(state, action.playerId)
+      if (!player) return state
+
+      // Each player can only place ONE starting settlement
+      const alreadyHasSettlement =
+        countSettlementsForPlayer(state, player.id) > 0
+      if (alreadyHasSettlement) {
+        return state
+      }
+
+      const payload = action
+        .payload as PlaceStartingSettlementPayload | undefined
+      if (!payload) return state
+
+      const tile = findTileById(state, payload.tileId)
+      if (!tile) return state
+
+      // Cannot place on water or on an already occupied tile
+      if (tile.terrain === "Water" || tile.settlementId) {
+        return state
+      }
+
+      // Create a basic starting settlement with small population
+      const settlementId = nextId()
+      const population = 4 // small tribe
+      const workers = 2
+      const worshippers = 1
+      const defenders = 1
+
+      const newSettlement = {
+        id: settlementId,
+        owner: player.id,
+        tileId: tile.id,
+        level: 1,
+        population,
+        workers,
+        worshippers,
+        defenders,
+      }
+
+      const updatedSettlements = [...state.settlements, newSettlement]
+
+      // Update the tile to reference the new settlement
+      const updatedTiles = state.tiles.map((t) =>
+        t.id === tile.id ? { ...t, settlementId } : t,
+      )
+
+      state = {
+        ...state,
+        tiles: updatedTiles,
+        settlements: updatedSettlements,
+      }
+
+      // Give the player 1 victory point for their starting settlement
+      const updatedPlayers = state.players.map((p) =>
+        p.id === player.id ? { ...p, victoryPoints: p.victoryPoints + 1 } : p,
+      )
+
+      state.players = updatedPlayers
+
+      // If both players now have a starting settlement, move to RUNNING phase
+      const p1Has = countSettlementsForPlayer(state, "PLAYER_1") > 0
+      const p2Has = countSettlementsForPlayer(state, "PLAYER_2") > 0
+
+      if (p1Has && p2Has && state.phase === "LOBBY") {
+        state.phase = "RUNNING"
+      }
+
+      // Advance logical time
+      state.currentTimeMs = Math.max(state.currentTimeMs, action.clientTimeMs)
+
       return state
+    }
 
-    case "BUILD_SETTLEMENT":
+    case "BUILD_SETTLEMENT": {
       // TODO: implement building rules, resource costs, VP gain
       return state
+    }
 
-    case "ALLOCATE_ROLES":
+    case "ALLOCATE_ROLES": {
       // TODO: implement follower allocation logic
       return state
+    }
 
-    default:
+    default: {
+      const neverAction: never = action.type
+      console.warn("Unhandled action type", neverAction)
       return state
+    }
   }
 }

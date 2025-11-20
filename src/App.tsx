@@ -1,4 +1,4 @@
-import GameRoot from "./components/GameRoot"
+import { GameRoot } from "./components/GameRoot"
 
 function App() {
   return <GameRoot />
