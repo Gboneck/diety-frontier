@@ -348,6 +348,18 @@ export const GameRoot: React.FC = () => {
       <pre style={{ background: "#000", color: "#0cf", padding: "8px" }}>
         {JSON.stringify(game.settlements, null, 2)}
       </pre>
+
+      <h2>Debug – Buffs & Upkeep</h2>
+      <pre style={{ background: "#000", color: "#ff0", padding: "8px" }}>
+        {JSON.stringify(
+          {
+            currentTimeMs: game.currentTimeMs,
+            buffs: game.buffs,
+          },
+          null,
+          2,
+        )}
+      </pre>
     </div>
   )
 }

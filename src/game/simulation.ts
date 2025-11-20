@@ -14,7 +14,6 @@ import type {
   AllocateRolesPayload,
   RaidSettlementPayload,
   UseDeityPowerPayload,
-  DeityPowerType,
   SettlementBuff,
   UpgradeSettlementPayload,
 } from "./types"
@@ -115,22 +114,6 @@ function countControlledTiles(state: GameState): Record<PlayerId, number> {
   return result
 }
 
-function createBuff(
-  settlementId: string,
-  owner: PlayerId,
-  type: DeityPowerType,
-  currentTimeMs: number,
-  durationMs: number,
-): SettlementBuff {
-  return {
-    id: nextId(),
-    settlementId,
-    owner,
-    type,
-    expiresAtMs: currentTimeMs + durationMs,
-  }
-}
-
 function computeRoleCountsFromPercents(
   population: number,
   workersPercent: number,
@@ -189,6 +172,19 @@ function emptyResourceRecord(): Record<ResourceType, number> {
     Gold: 0,
     Belief: 0,
   }
+}
+
+function subtractResources(
+  base: Record<ResourceType, number>,
+  cost: Partial<Record<ResourceType, number>>,
+): Record<ResourceType, number> {
+  const next: Record<ResourceType, number> = { ...base }
+  ;(Object.keys(cost) as ResourceType[]).forEach((res) => {
+    const c = cost[res] ?? 0
+    const current = next[res] ?? 0
+    next[res] = Math.max(0, current - c)
+  })
+  return next
 }
 
 /**
@@ -293,6 +289,7 @@ export function reduceGameState(
     case "TICK": {
       const payload = action.payload as TickPayload | undefined
       const deltaMs = payload?.deltaMs ?? 1000
+      const seconds = deltaMs / 1000
 
       const nextTime = state.currentTimeMs + deltaMs
       state.currentTimeMs = nextTime
@@ -411,17 +408,70 @@ export function reduceGameState(
         }
       })
 
-      // --- Population growth ---
+      // --- Food upkeep & starvation gating ---
+
+      const UPKEEP_PER_PERSON_PER_SECOND = 0.05
+
+      const starvingPlayers: Record<PlayerId, boolean> = {
+        PLAYER_1: false,
+        PLAYER_2: false,
+      }
+
+      const popByPlayer: Record<PlayerId, number> = {
+        PLAYER_1: 0,
+        PLAYER_2: 0,
+      }
+
+      for (const s of state.settlements) {
+        popByPlayer[s.owner] += s.population
+      }
+
+      state.players = state.players.map((player) => {
+        const totalPop = popByPlayer[player.id] ?? 0
+        if (totalPop <= 0) return player
+
+        const requiredFood = totalPop * UPKEEP_PER_PERSON_PER_SECOND * seconds
+        const currentFood = player.resources.Food ?? 0
+
+        if (requiredFood <= 0) {
+          return player
+        }
+
+        if (currentFood >= requiredFood) {
+          const newResources = subtractResources(player.resources, {
+            Food: requiredFood,
+          })
+          return {
+            ...player,
+            resources: newResources,
+          }
+        }
+
+        const newResources = subtractResources(player.resources, {
+          Food: currentFood,
+        })
+
+        starvingPlayers[player.id] = true
+
+        return {
+          ...player,
+          resources: newResources,
+        }
+      })
+
+      // --- Population growth (blocked by starvation) ---
 
       const GROWTH_RATE_PER_SECOND = 0.05
       const GROWTH_THRESHOLD = 10
-
-      const seconds = deltaMs / 1000
 
       state.settlements = state.settlements.map((settlement) => {
         let s = { ...settlement }
 
         if (s.population >= s.populationCap) {
+          return s
+        }
+
+        if (starvingPlayers[s.owner]) {
           return s
         }
 
@@ -580,7 +630,6 @@ export function reduceGameState(
       const settlement = findSettlementById(state, payload.settlementId)
       if (!settlement) return state
 
-      // Must own the settlement
       if (settlement.owner !== action.playerId) {
         return state
       }
@@ -589,24 +638,27 @@ export function reduceGameState(
       if (!player) return state
 
       let cost = 0
-      const durationMs = 15000
+      let durationMs = 15000
 
-      if (payload.power === "BLESSED_HARVEST") {
-        cost = 10
-      } else if (payload.power === "INSPIRED_WORSHIP") {
-        cost = 15
+      switch (payload.power) {
+        case "BLESSED_HARVEST":
+          cost = 10
+          break
+        case "INSPIRED_WORSHIP":
+          cost = 15
+          break
+        default:
+          return state
       }
 
-      if (player.belief < cost) {
+      const currentBelief = player.resources.Belief ?? 0
+      if (currentBelief < cost) {
         return state
       }
 
       const updatedPlayers = state.players.map((p) => {
         if (p.id !== player.id) return p
-        const newResources: Record<ResourceType, number> = {
-          ...p.resources,
-          Belief: (p.resources.Belief ?? 0) - cost,
-        }
+        const newResources = subtractResources(p.resources, { Belief: cost })
         const newBelief = newResources.Belief ?? 0
         return {
           ...p,
@@ -616,13 +668,13 @@ export function reduceGameState(
         }
       })
 
-      const newBuff = createBuff(
-        settlement.id,
-        settlement.owner,
-        payload.power,
-        state.currentTimeMs,
-        durationMs,
-      )
+      const newBuff: SettlementBuff = {
+        id: nextId(),
+        settlementId: settlement.id,
+        owner: settlement.owner,
+        type: payload.power,
+        expiresAtMs: state.currentTimeMs + durationMs,
+      }
 
       state = {
         ...state,
@@ -700,12 +752,10 @@ export function reduceGameState(
       const target = findSettlementById(state, payload.targetSettlementId)
       if (!from || !target) return state
 
-      // Must own the attacking settlement
       if (from.owner !== action.playerId) {
         return state
       }
 
-      // Cannot raid your own settlement
       if (from.owner === target.owner) {
         return state
       }
@@ -717,12 +767,8 @@ export function reduceGameState(
 
       const percent = Math.max(0, Math.min(100, payload.raiderPercent))
       let raiderCount = Math.floor((baseDefenders * percent) / 100)
-      if (raiderCount <= 0) {
-        raiderCount = 1
-      }
-      if (raiderCount > baseDefenders) {
-        raiderCount = baseDefenders
-      }
+      if (raiderCount <= 0) raiderCount = 1
+      if (raiderCount > baseDefenders) raiderCount = baseDefenders
 
       const attackPower = raiderCount
       const defensePower = target.defenders
@@ -730,7 +776,8 @@ export function reduceGameState(
       let attackerLosses = 0
       let defenderLosses = 0
       let populationLoss = 0
-      let loot: Record<ResourceType, number> = emptyResourceRecord()
+
+      const loot: Record<ResourceType, number> = emptyResourceRecord()
 
       if (attackPower <= defensePower) {
         attackerLosses = attackPower
@@ -743,21 +790,24 @@ export function reduceGameState(
 
         populationLoss = Math.min(target.population, overkill)
 
-        const lootFactor = 0.2
-
         const attackerPlayer = getPlayer(state, from.owner)
         const defenderPlayer = getPlayer(state, target.owner)
+        const LOOT_FACTOR = 0.2
+
         if (attackerPlayer && defenderPlayer) {
+          ;(Object.keys(attackerPlayer.resources) as ResourceType[]).forEach(
+            (res) => {
+              const defRes = defenderPlayer.resources[res] ?? 0
+              const take = Math.floor(defRes * LOOT_FACTOR)
+              loot[res] = take
+            },
+          )
+
           const updatedPlayers: Player[] = state.players.map((p) => {
             if (p.id === attackerPlayer.id) {
-              const newResources: Record<ResourceType, number> = {
-                ...p.resources,
-              }
-              ;(Object.keys(newResources) as ResourceType[]).forEach((res) => {
-                const defRes = defenderPlayer.resources[res] ?? 0
-                const take = Math.floor(defRes * lootFactor)
-                loot[res] = take
-                newResources[res] = (newResources[res] ?? 0) + take
+              const newResources = { ...p.resources }
+              ;(Object.keys(loot) as ResourceType[]).forEach((res) => {
+                newResources[res] = (newResources[res] ?? 0) + (loot[res] ?? 0)
               })
               const newBelief = newResources.Belief ?? 0
               return {
@@ -767,16 +817,7 @@ export function reduceGameState(
                 maxBeliefEver: Math.max(p.maxBeliefEver, newBelief),
               }
             } else if (p.id === defenderPlayer.id) {
-              const newResources: Record<ResourceType, number> = {
-                ...p.resources,
-              }
-              ;(Object.keys(newResources) as ResourceType[]).forEach((res) => {
-                const give = loot[res] ?? 0
-                newResources[res] = Math.max(
-                  0,
-                  (newResources[res] ?? 0) - give,
-                )
-              })
+              const newResources = subtractResources(p.resources, loot)
               const newBelief = newResources.Belief ?? 0
               return {
                 ...p,
