@@ -191,9 +191,9 @@ export const GameRoot: React.FC = () => {
           </p>
         ) : game.phase === "RUNNING" ? (
           <p>
-            <strong>Running:</strong> You are in a shared live game. Any changes
-            made by the host will sync here in real time. Next we’ll add more
-            actions and deity systems.
+            <strong>Running:</strong> Settlements now generate resources and
+            belief every second. Watch the players' resources update in real
+            time as the host simulates the world.
           </p>
         ) : (
           <p>

@@ -91,11 +91,17 @@ export interface AllocateRolesPayload {
   defenders: number
 }
 
+// Tick payload
+export interface TickPayload {
+  deltaMs: number
+}
+
 // Union of payloads
 export type AnyActionPayload =
   | PlaceStartingSettlementPayload
   | BuildSettlementPayload
   | AllocateRolesPayload
+  | TickPayload
   | undefined
 
 export type AnyPlayerAction = PlayerAction<AnyActionPayload>
