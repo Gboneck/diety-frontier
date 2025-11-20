@@ -10,6 +10,49 @@ export type TerrainType =
 
 export type PlayerId = "PLAYER_1" | "PLAYER_2"
 
+// Action types for real-time play
+export type ActionType =
+  | "NOOP"
+  | "PLACE_STARTING_SETTLEMENT"
+  | "BUILD_SETTLEMENT"
+  | "ALLOCATE_ROLES"
+  | "TICK"
+// TICK will be used by the host to advance simulation time if needed
+
+// Base shape of a player action that gets sent over the network
+export interface PlayerAction<TPayload = unknown> {
+  id: string // client-generated UUID
+  playerId: PlayerId
+  type: ActionType
+  payload: TPayload
+  clientTimeMs: number // when the client created the action
+}
+
+// Typed payloads for a few core actions (we’ll wire logic later)
+export interface PlaceStartingSettlementPayload {
+  tileId: string
+}
+
+export interface BuildSettlementPayload {
+  tileId: string
+}
+
+export interface AllocateRolesPayload {
+  settlementId: string
+  workers: number
+  worshippers: number
+  defenders: number
+}
+
+// Union of all known payloads for convenience (optional but helpful)
+export type AnyActionPayload =
+  | PlaceStartingSettlementPayload
+  | BuildSettlementPayload
+  | AllocateRolesPayload
+  | undefined
+
+export type AnyPlayerAction = PlayerAction<AnyActionPayload>
+
 // Axial hex coordinates (for a hex grid)
 export interface HexCoord {
   q: number
