@@ -2,9 +2,11 @@ import type {
   GameState,
   Player,
   PlayerId,
+  Settlement,
   ResourceType,
   TerrainType,
   Tile,
+  HexCoord,
   AnyPlayerAction,
   ActionType,
   PlaceStartingSettlementPayload,
@@ -14,6 +16,7 @@ import type {
   UseDeityPowerPayload,
   DeityPowerType,
   SettlementBuff,
+  UpgradeSettlementPayload,
 } from "./types"
 
 // Utility to create ids (simple for now; we can swap to uuid later)
@@ -34,6 +37,82 @@ function findTileById(state: GameState, tileId: string): Tile | undefined {
 
 function findSettlementById(state: GameState, settlementId: string) {
   return state.settlements.find((s) => s.id === settlementId)
+}
+
+function hexDistance(a: HexCoord, b: HexCoord): number {
+  const ax = a.q
+  const az = a.r
+  const ay = -ax - az
+
+  const bx = b.q
+  const bz = b.r
+  const by = -bx - bz
+
+  return Math.max(Math.abs(ax - bx), Math.abs(ay - by), Math.abs(az - bz))
+}
+
+// Influence radius grows with settlement level
+function getSettlementInfluenceRadius(settlement: Settlement): number {
+  return 1 + settlement.level
+}
+
+// Recompute tile.controller based on nearest settlement and influence radius
+function assignTileControllers(state: GameState): GameState {
+  const settlementsWithCoords = state.settlements
+    .map((s) => {
+      const tile = findTileById(state, s.tileId)
+      return tile ? { settlement: s, coord: tile.coord } : null
+    })
+    .filter(Boolean) as { settlement: Settlement; coord: HexCoord }[]
+
+  const newTiles = state.tiles.map((tile) => {
+    if (settlementsWithCoords.length === 0) {
+      return { ...tile, controller: null }
+    }
+
+    let bestOwner: PlayerId | null = null
+    let bestDist = Infinity
+    let contested = false
+
+    for (const { settlement, coord } of settlementsWithCoords) {
+      const radius = getSettlementInfluenceRadius(settlement)
+      const dist = hexDistance(tile.coord, coord)
+      if (dist > radius) continue
+
+      if (dist < bestDist) {
+        bestDist = dist
+        bestOwner = settlement.owner
+        contested = false
+      } else if (dist === bestDist && settlement.owner !== bestOwner) {
+        contested = true
+      }
+    }
+
+    const controller = contested ? null : bestOwner
+    return { ...tile, controller }
+  })
+
+  return {
+    ...state,
+    tiles: newTiles,
+  }
+}
+
+// Count controlled tiles per player
+function countControlledTiles(state: GameState): Record<PlayerId, number> {
+  const result: Record<PlayerId, number> = {
+    PLAYER_1: 0,
+    PLAYER_2: 0,
+  }
+
+  for (const tile of state.tiles) {
+    if (!tile.controller) continue
+    if (result[tile.controller] != null) {
+      result[tile.controller] += 1
+    }
+  }
+
+  return result
 }
 
 function createBuff(
@@ -169,10 +248,10 @@ function pickTerrainForCoord(q: number, r: number): TerrainType {
 
 function createPlayer(id: PlayerId, name: string): Player {
   const resources: Record<ResourceType, number> = {
-    Food: 3,
-    Wood: 3,
-    Stone: 2,
-    Gold: 1,
+    Food: 0,
+    Wood: 0,
+    Stone: 0,
+    Gold: 0,
     Belief: 0,
   }
 
@@ -224,6 +303,10 @@ export function reduceGameState(
       )
       state.buffs = activeBuffs
 
+      // Recompute controllers for territory
+      state = assignTileControllers(state)
+      const controlledCounts = countControlledTiles(state)
+
       // Only run economy if the game is actually running
       if (state.phase !== "RUNNING") {
         return state
@@ -262,37 +345,45 @@ export function reduceGameState(
           }
         }
 
+        // Territory bonus: more controlled tiles => better yields
+        const territoryTiles = controlledCounts[ownerId] ?? 0
+        const territoryBoost = 1 + Math.min(territoryTiles * 0.02, 2)
+
         // Workers gather from the terrain of their tile
         if (workers > 0) {
-          let foodGain = 0
-          let woodGain = 0
-          let stoneGain = 0
+          let foodGain = workers * 1
+          let woodGain = workers * 0.5
+          let stoneGain = workers * 0.25
 
           switch (tile.terrain) {
             case "Field":
-              foodGain = workers
+              foodGain += workers * 1
               break
             case "FertileField":
-              foodGain = workers * 2
+              foodGain += workers * 2
               break
             case "Forest":
-              woodGain = workers
+              woodGain += workers * 1
               break
             case "Mountain":
-              stoneGain = workers
+              stoneGain += workers * 1
+              break
+            case "Water":
+              bucket.Gold +=
+                workers * 0.25 * workerMultiplier * territoryBoost
               break
             default:
               break
           }
 
-          bucket.Food += foodGain * workerMultiplier
-          bucket.Wood += woodGain * workerMultiplier
-          bucket.Stone += stoneGain * workerMultiplier
+          bucket.Food += foodGain * workerMultiplier * territoryBoost
+          bucket.Wood += woodGain * workerMultiplier * territoryBoost
+          bucket.Stone += stoneGain * workerMultiplier * territoryBoost
         }
 
         // Worshippers generate belief
         if (worshippers > 0) {
-          const beliefGain = worshippers * worshipperMultiplier
+          const beliefGain = worshippers * worshipperMultiplier * territoryBoost
           bucket.Belief += beliefGain
         }
       }
@@ -318,6 +409,31 @@ export function reduceGameState(
           belief: newBelief,
           maxBeliefEver: Math.max(player.maxBeliefEver, newBelief),
         }
+      })
+
+      // --- Population growth ---
+
+      const GROWTH_RATE_PER_SECOND = 0.05
+      const GROWTH_THRESHOLD = 10
+
+      const seconds = deltaMs / 1000
+
+      state.settlements = state.settlements.map((settlement) => {
+        let s = { ...settlement }
+
+        if (s.population >= s.populationCap) {
+          return s
+        }
+
+        s.growthProgress += s.population * GROWTH_RATE_PER_SECOND * seconds
+
+        while (s.growthProgress >= GROWTH_THRESHOLD && s.population < s.populationCap) {
+          s.growthProgress -= GROWTH_THRESHOLD
+          s.population += 1
+          s.workers += 1
+        }
+
+        return s
       })
 
       return state
@@ -353,10 +469,10 @@ export function reduceGameState(
 
       // Create a basic starting settlement with small population
       const settlementId = nextId()
-      const population = 4 // small tribe
-      const workers = 2
-      const worshippers = 1
-      const defenders = 1
+      const population = 10
+      const workers = 6
+      const worshippers = 2
+      const defenders = 2
 
       const newSettlement = {
         id: settlementId,
@@ -367,13 +483,17 @@ export function reduceGameState(
         workers,
         worshippers,
         defenders,
+        populationCap: 20,
+        growthProgress: 0,
       }
 
       const updatedSettlements = [...state.settlements, newSettlement]
 
       // Update the tile to reference the new settlement
       const updatedTiles = state.tiles.map((t) =>
-        t.id === tile.id ? { ...t, settlementId } : t,
+        t.id === tile.id
+          ? { ...t, settlementId, controller: action.playerId }
+          : t,
       )
 
       state = {
@@ -508,6 +628,63 @@ export function reduceGameState(
         ...state,
         players: updatedPlayers,
         buffs: [...(state.buffs ?? []), newBuff],
+      }
+
+      state.currentTimeMs = Math.max(state.currentTimeMs, action.clientTimeMs)
+
+      return state
+    }
+
+    case "UPGRADE_SETTLEMENT": {
+      const payload = action.payload as UpgradeSettlementPayload | undefined
+      if (!payload) return state
+
+      const settlement = findSettlementById(state, payload.settlementId)
+      if (!settlement) return state
+
+      if (settlement.owner !== action.playerId) {
+        return state
+      }
+
+      const player = getPlayer(state, action.playerId)
+      if (!player) return state
+
+      const costWood = 50
+      const costStone = 50
+
+      const currentWood = player.resources.Wood ?? 0
+      const currentStone = player.resources.Stone ?? 0
+
+      if (currentWood < costWood || currentStone < costStone) {
+        return state
+      }
+
+      state.players = state.players.map((p) => {
+        if (p.id !== player.id) return p
+        const newResources: Record<ResourceType, number> = {
+          ...p.resources,
+          Wood: currentWood - costWood,
+          Stone: currentStone - costStone,
+        }
+        return {
+          ...p,
+          resources: newResources,
+        }
+      })
+
+      const updatedSettlements = state.settlements.map((s) =>
+        s.id === settlement.id
+          ? {
+              ...s,
+              level: s.level + 1,
+              populationCap: s.populationCap + 10,
+            }
+          : s,
+      )
+
+      state = {
+        ...state,
+        settlements: updatedSettlements,
       }
 
       state.currentTimeMs = Math.max(state.currentTimeMs, action.clientTimeMs)

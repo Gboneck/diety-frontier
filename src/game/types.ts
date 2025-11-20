@@ -24,6 +24,9 @@ export interface Tile {
   coord: HexCoord
   terrain: TerrainType
   settlementId?: string // optional settlement on this tile
+
+  // id of the player that currently controls this tile (zone of influence)
+  controller?: PlayerId | null
 }
 
 export interface Settlement {
@@ -35,6 +38,10 @@ export interface Settlement {
   workers: number
   worshippers: number
   defenders: number
+
+  // Growth + capacity
+  populationCap: number
+  growthProgress: number
 }
 
 // Player + deity-related fields
@@ -79,6 +86,7 @@ export type ActionType =
   | "TICK"
   | "RAID_SETTLEMENT"
   | "USE_DEITY_POWER"
+  | "UPGRADE_SETTLEMENT"
 
 export interface PlayerAction<TPayload = unknown> {
   id: string // client-generated UUID
@@ -122,6 +130,10 @@ export interface UseDeityPowerPayload {
   settlementId: string
 }
 
+export interface UpgradeSettlementPayload {
+  settlementId: string
+}
+
 // Union of payloads
 export type AnyActionPayload =
   | PlaceStartingSettlementPayload
@@ -130,6 +142,7 @@ export type AnyActionPayload =
   | TickPayload
   | RaidSettlementPayload
   | UseDeityPowerPayload
+  | UpgradeSettlementPayload
   | undefined
 
 export type AnyPlayerAction = PlayerAction<AnyActionPayload>

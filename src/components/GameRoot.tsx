@@ -7,6 +7,7 @@ import type {
   PlaceStartingSettlementPayload,
   RaidSettlementPayload,
   UseDeityPowerPayload,
+  UpgradeSettlementPayload,
 } from "../game/types"
 import { SettlementRolesPanel } from "./SettlementRolesPanel"
 import { CombatPanel } from "./CombatPanel"
@@ -104,6 +105,20 @@ export const GameRoot: React.FC = () => {
 
       dispatchActionForLocalPlayer({
         type: "USE_DEITY_POWER",
+        payload,
+        clientTimeMs: performance.now(),
+      })
+    },
+    [game, localPlayerId, dispatchActionForLocalPlayer],
+  )
+
+  const handleUpgradeSettlement = useCallback(
+    (settlementId: string) => {
+      if (!game || !localPlayerId) return
+      const payload: UpgradeSettlementPayload = { settlementId }
+
+      dispatchActionForLocalPlayer({
+        type: "UPGRADE_SETTLEMENT",
         payload,
         clientTimeMs: performance.now(),
       })
@@ -300,6 +315,25 @@ export const GameRoot: React.FC = () => {
         localPlayerId={localPlayerId}
         onCastPower={handleCastPower}
       />
+
+      <h2>Your Settlements (Upgrades)</h2>
+      <div style={{ marginBottom: "16px" }}>
+        {game.settlements
+          .filter((s) => s.owner === localPlayerId)
+          .map((s) => (
+            <div key={s.id} style={{ marginBottom: "4px", fontSize: "0.9rem" }}>
+              <span>
+                {s.id} – Level {s.level}, Pop {s.population}/{s.populationCap}
+              </span>
+              <button
+                style={{ marginLeft: "8px" }}
+                onClick={() => handleUpgradeSettlement(s.id)}
+              >
+                Upgrade (50W / 50S)
+              </button>
+            </div>
+          ))}
+      </div>
 
       <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
         <button onClick={disconnect}>Disconnect</button>
