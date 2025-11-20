@@ -44,6 +44,46 @@ export function useWsGame(): UseWsGameResult {
     }
   }, [wsClient])
 
+  // Host-only: run a periodic TICK to advance simulation and generate resources/belief
+  useEffect(() => {
+    if (!isHost || !roomId || !localPlayerId) return
+
+    let lastTime = performance.now()
+
+    const interval = setInterval(() => {
+      const now = performance.now()
+      const deltaMs = now - lastTime
+      lastTime = now
+
+      // Use functional setGame to always start from the latest state
+      setGame((prev) => {
+        if (!prev) return prev
+
+        const tickAction: AnyPlayerAction = {
+          id: crypto.randomUUID ? crypto.randomUUID() : `tick_${Date.now()}`,
+          playerId: localPlayerId,
+          type: "TICK",
+          payload: { deltaMs },
+        }
+
+        const nextState = reduceGameState(prev, tickAction)
+
+        // Broadcast authoritative state to all clients
+        wsClient.send({
+          type: "state",
+          roomId,
+          state: nextState,
+        })
+
+        return nextState
+      })
+    }, 1000) // one tick per second
+
+    return () => {
+      clearInterval(interval)
+    }
+  }, [isHost, roomId, localPlayerId, wsClient, setGame])
+
   const handleWsMessage = useCallback(
     (msg: WsMessage) => {
       if (!msg || typeof msg !== "object") return

@@ -7,6 +7,7 @@ import type {
   Tile,
   AnyPlayerAction,
   PlaceStartingSettlementPayload,
+  TickPayload,
 } from "./types"
 
 // Utility to create ids (simple for now; we can swap to uuid later)
@@ -23,6 +24,16 @@ function countSettlementsForPlayer(state: GameState, playerId: PlayerId): number
 
 function findTileById(state: GameState, tileId: string): Tile | undefined {
   return state.tiles.find((t) => t.id === tileId)
+}
+
+function emptyResourceRecord(): Record<ResourceType, number> {
+  return {
+    Food: 0,
+    Wood: 0,
+    Stone: 0,
+    Gold: 0,
+    Belief: 0,
+  }
 }
 
 /**
@@ -121,11 +132,84 @@ export function reduceGameState(
     }
 
     case "TICK": {
-      // Later we can use this to run periodic simulation (growth, belief, etc.)
-      state.currentTimeMs = Math.max(
-        state.currentTimeMs,
-        action.clientTimeMs,
-      )
+      const payload = action.payload as TickPayload | undefined
+      const deltaMs = payload?.deltaMs ?? 1000
+
+      // Always move logical time forward
+      state.currentTimeMs = state.currentTimeMs + deltaMs
+
+      // Only run economy if the game is actually running
+      if (state.phase !== "RUNNING") {
+        return state
+      }
+
+      // Initialize income per player
+      const incomes: Record<PlayerId, Record<ResourceType, number>> = {
+        PLAYER_1: emptyResourceRecord(),
+        PLAYER_2: emptyResourceRecord(),
+      }
+
+      // Accumulate income from each settlement
+      for (const settlement of state.settlements) {
+        const tile = findTileById(state, settlement.tileId)
+        if (!tile) continue
+
+        const ownerId = settlement.owner
+        const bucket = incomes[ownerId]
+        if (!bucket) continue
+
+        const workers = settlement.workers
+        const worshippers = settlement.worshippers
+
+        // Workers gather from the terrain of their tile
+        if (workers > 0) {
+          switch (tile.terrain) {
+            case "Field":
+              bucket.Food += workers
+              break
+            case "FertileField":
+              bucket.Food += workers * 2
+              break
+            case "Forest":
+              bucket.Wood += workers
+              break
+            case "Mountain":
+              bucket.Stone += workers
+              break
+            default:
+              break
+          }
+        }
+
+        // Worshippers generate belief
+        if (worshippers > 0) {
+          bucket.Belief += worshippers
+        }
+      }
+
+      // Apply incomes to players
+      state.players = state.players.map((player) => {
+        const delta = incomes[player.id]
+        if (!delta) return player
+
+        const newResources: Record<ResourceType, number> = {
+          ...player.resources,
+        }
+
+        ;(Object.keys(delta) as ResourceType[]).forEach((res) => {
+          newResources[res] = (newResources[res] ?? 0) + delta[res]
+        })
+
+        const newBelief = newResources.Belief ?? 0
+
+        return {
+          ...player,
+          resources: newResources,
+          belief: newBelief,
+          maxBeliefEver: Math.max(player.maxBeliefEver, newBelief),
+        }
+      })
+
       return state
     }
 
