@@ -64,6 +64,7 @@ export function useWsGame(): UseWsGameResult {
           playerId: localPlayerId,
           type: "TICK",
           payload: { deltaMs },
+          clientTimeMs: now,
         }
 
         const nextState = reduceGameState(prev, tickAction)

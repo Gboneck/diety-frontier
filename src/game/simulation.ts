@@ -6,8 +6,10 @@ import type {
   TerrainType,
   Tile,
   AnyPlayerAction,
+  ActionType,
   PlaceStartingSettlementPayload,
   TickPayload,
+  AllocateRolesPayload,
 } from "./types"
 
 // Utility to create ids (simple for now; we can swap to uuid later)
@@ -24,6 +26,60 @@ function countSettlementsForPlayer(state: GameState, playerId: PlayerId): number
 
 function findTileById(state: GameState, tileId: string): Tile | undefined {
   return state.tiles.find((t) => t.id === tileId)
+}
+
+function findSettlementById(state: GameState, settlementId: string) {
+  return state.settlements.find((s) => s.id === settlementId)
+}
+
+function computeRoleCountsFromPercents(
+  population: number,
+  workersPercent: number,
+  worshippersPercent: number,
+  defendersPercent: number,
+): { workers: number; worshippers: number; defenders: number } {
+  if (population <= 0) {
+    return { workers: 0, worshippers: 0, defenders: 0 }
+  }
+
+  // Clamp percentages to [0, 100]
+  const wP = Math.max(0, Math.min(100, workersPercent))
+  const wpP = Math.max(0, Math.min(100, worshippersPercent))
+  const dP = Math.max(0, Math.min(100, defendersPercent))
+
+  const totalPercent = wP + wpP + dP
+
+  if (totalPercent <= 0) {
+    // Default: everyone works
+    return { workers: population, worshippers: 0, defenders: 0 }
+  }
+
+  // Compute raw counts based on relative percentages
+  const workersRaw = (population * wP) / totalPercent
+  const worshippersRaw = (population * wpP) / totalPercent
+  const defendersRaw = (population * dP) / totalPercent
+
+  let workers = Math.floor(workersRaw)
+  let worshippers = Math.floor(worshippersRaw)
+  let defenders = Math.floor(defendersRaw)
+
+  // Distribute any remaining population due to rounding
+  let assigned = workers + worshippers + defenders
+  let remaining = population - assigned
+
+  while (remaining > 0) {
+    // Assign extra people in order: workers -> worshippers -> defenders
+    if (workers < Math.ceil(workersRaw)) {
+      workers++
+    } else if (worshippers < Math.ceil(worshippersRaw)) {
+      worshippers++
+    } else {
+      defenders++
+    }
+    remaining--
+  }
+
+  return { workers, worshippers, defenders }
 }
 
 function emptyResourceRecord(): Record<ResourceType, number> {
@@ -121,7 +177,9 @@ export function reduceGameState(
   // Always work on a shallow copy so we don't mutate previous state.
   let state: GameState = { ...prev }
 
-  switch (action.type) {
+  const actionType: ActionType = action.type
+
+  switch (actionType) {
     case "NOOP": {
       // Debug action – do nothing except advance logical time slightly
       state.currentTimeMs = Math.max(
@@ -299,12 +357,52 @@ export function reduceGameState(
     }
 
     case "ALLOCATE_ROLES": {
-      // TODO: implement follower allocation logic
+      const payload = action.payload as AllocateRolesPayload | undefined
+      if (!payload) return state
+
+      const settlement = findSettlementById(state, payload.settlementId)
+      if (!settlement) return state
+
+      // Only the owner of the settlement can change roles
+      if (settlement.owner !== action.playerId) {
+        return state
+      }
+
+      const population = settlement.population
+      const { workersPercent, worshippersPercent, defendersPercent } = payload
+
+      const { workers, worshippers, defenders } =
+        computeRoleCountsFromPercents(
+          population,
+          workersPercent,
+          worshippersPercent,
+          defendersPercent,
+        )
+
+      const updatedSettlements = state.settlements.map((s) =>
+        s.id === settlement.id
+          ? {
+              ...s,
+              workers,
+              worshippers,
+              defenders,
+            }
+          : s,
+      )
+
+      state = {
+        ...state,
+        settlements: updatedSettlements,
+      }
+
+      // Advance time a bit (optional)
+      state.currentTimeMs = Math.max(state.currentTimeMs, action.clientTimeMs)
+
       return state
     }
 
     default: {
-      const neverAction: never = action.type
+      const neverAction: never = actionType
       console.warn("Unhandled action type", neverAction)
       return state
     }

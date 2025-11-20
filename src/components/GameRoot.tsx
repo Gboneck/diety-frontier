@@ -1,7 +1,11 @@
 import React, { useCallback, useState } from "react"
 import { HexBoard } from "./HexBoard"
 import { useWsGame } from "../state/useWsGame"
-import type { PlaceStartingSettlementPayload } from "../game/types"
+import type {
+  AllocateRolesPayload,
+  PlaceStartingSettlementPayload,
+} from "../game/types"
+import { SettlementRolesPanel } from "./SettlementRolesPanel"
 
 export const GameRoot: React.FC = () => {
   const {
@@ -29,6 +33,31 @@ export const GameRoot: React.FC = () => {
       const payload: PlaceStartingSettlementPayload = { tileId }
       dispatchActionForLocalPlayer({
         type: "PLACE_STARTING_SETTLEMENT",
+        payload,
+        clientTimeMs: performance.now(),
+      })
+    },
+    [game, localPlayerId, dispatchActionForLocalPlayer],
+  )
+
+  const handleUpdateRoles = useCallback(
+    (args: {
+      settlementId: string
+      workersPercent: number
+      worshippersPercent: number
+      defendersPercent: number
+    }) => {
+      if (!game || !localPlayerId) return
+
+      const payload: AllocateRolesPayload = {
+        settlementId: args.settlementId,
+        workersPercent: args.workersPercent,
+        worshippersPercent: args.worshippersPercent,
+        defendersPercent: args.defendersPercent,
+      }
+
+      dispatchActionForLocalPlayer({
+        type: "ALLOCATE_ROLES",
         payload,
         clientTimeMs: performance.now(),
       })
@@ -206,6 +235,12 @@ export const GameRoot: React.FC = () => {
         tiles={game.tiles}
         settlements={game.settlements}
         onTileClick={handleTileClick}
+      />
+
+      <SettlementRolesPanel
+        game={game}
+        localPlayerId={localPlayerId}
+        onUpdateRoles={handleUpdateRoles}
       />
 
       <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>

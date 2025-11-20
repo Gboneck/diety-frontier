@@ -86,9 +86,10 @@ export interface BuildSettlementPayload {
 
 export interface AllocateRolesPayload {
   settlementId: string
-  workers: number
-  worshippers: number
-  defenders: number
+  // Percentages (0–100). They do NOT have to sum to 100; any remainder is "idle".
+  workersPercent: number
+  worshippersPercent: number
+  defendersPercent: number
 }
 
 // Tick payload
