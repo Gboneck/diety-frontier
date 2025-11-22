@@ -16,7 +16,13 @@ export const FactionPolicyPanel: React.FC<FactionPolicyPanelProps> = ({
   const player = game.players.find((p) => p.id === localPlayerId)
   if (!player) return null
 
-  const policy = player.policy
+  const policy =
+    player.policy ?? {
+      workersPercent: 60,
+      worshippersPercent: 20,
+      defendersPercent: 20,
+      stance: "DEFENSIVE",
+    }
 
   const updateField = (field: keyof FactionPolicy, value: number | Stance) => {
     const next: FactionPolicy = {

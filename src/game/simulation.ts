@@ -23,6 +23,13 @@ import type {
   Stance,
 } from "./types"
 
+const DEFAULT_POLICY: FactionPolicy = {
+  workersPercent: 60,
+  worshippersPercent: 20,
+  defendersPercent: 20,
+  stance: "DEFENSIVE",
+}
+
 // Utility to create ids (simple for now; we can swap to uuid later)
 let idCounter = 0
 export const nextId = () => `id_${idCounter++}`
@@ -110,7 +117,7 @@ export function computeNpcActions(state: GameState): AnyPlayerAction[] {
   const actions: AnyPlayerAction[] = []
 
   for (const player of state.players) {
-    const policy = player.policy
+    const policy = player.policy ?? DEFAULT_POLICY
 
     const mySettlements = state.settlements.filter((s) => s.owner === player.id)
 
@@ -225,7 +232,7 @@ export function computeNpcActions(state: GameState): AnyPlayerAction[] {
     }
 
     if (state.phase === "RUNNING" && mySettlements.length > 0) {
-      const stance: Stance = policy?.stance ?? "DEFENSIVE"
+      const stance: Stance = policy.stance
 
       let raidChance = 0
       let minDefendersForRaid = 5
@@ -365,16 +372,9 @@ function subtractResources(
 export function createInitialGameState(gameId: string): GameState {
   const tiles: Tile[] = createSmallHexMap()
 
-  const defaultPolicy: FactionPolicy = {
-    workersPercent: 60,
-    worshippersPercent: 20,
-    defendersPercent: 20,
-    stance: "DEFENSIVE",
-  }
-
   const players: Player[] = [
-    createPlayer("PLAYER_1", "Player 1", false, { ...defaultPolicy }),
-    createPlayer("PLAYER_2", "Player 2", false, { ...defaultPolicy }),
+    createPlayer("PLAYER_1", "Player 1", false, { ...DEFAULT_POLICY }),
+    createPlayer("PLAYER_2", "Player 2", false, { ...DEFAULT_POLICY }),
     createPlayer("NPC_1", "Ashen Covenant", true, {
       workersPercent: 50,
       worshippersPercent: 30,
@@ -447,13 +447,7 @@ function createPlayer(
     victoryPoints: 0,
     belief: 0,
     maxBeliefEver: 0,
-    policy:
-      policy ?? {
-        workersPercent: 60,
-        worshippersPercent: 20,
-        defendersPercent: 20,
-        stance: "DEFENSIVE",
-      },
+    policy: policy ?? DEFAULT_POLICY,
     isNpc,
   }
 }
@@ -687,8 +681,7 @@ export function reduceGameState(
         const player = getPlayer(state, settlement.owner)
         if (!player) return settlement
 
-        const policy = player.policy
-        if (!policy) return settlement
+        const policy = player.policy ?? DEFAULT_POLICY
 
         const pop = settlement.population
         if (pop <= 0) return settlement
