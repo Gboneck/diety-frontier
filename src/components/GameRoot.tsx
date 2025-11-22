@@ -4,6 +4,7 @@ import { useWsGame } from "../state/useWsGame"
 import type {
   AllocateRolesPayload,
   DeityPowerType,
+  BuildSettlementPayload,
   PlaceStartingSettlementPayload,
   RaidSettlementPayload,
   UseDeityPowerPayload,
@@ -34,14 +35,37 @@ export const GameRoot: React.FC = () => {
   const handleTileClick = useCallback(
     (tileId: string) => {
       if (!game || !localPlayerId) return
-      if (game.phase !== "LOBBY") return
 
-      const payload: PlaceStartingSettlementPayload = { tileId }
-      dispatchActionForLocalPlayer({
-        type: "PLACE_STARTING_SETTLEMENT",
-        payload,
-        clientTimeMs: performance.now(),
-      })
+      const tile = game.tiles.find((t) => t.id === tileId)
+      if (!tile) return
+
+      if (tile.terrain === "Water") return
+
+      const hasSettlement = !!tile.settlementId
+
+      if (game.phase === "LOBBY") {
+        if (hasSettlement) return
+
+        const payload: PlaceStartingSettlementPayload = { tileId: tile.id }
+        dispatchActionForLocalPlayer({
+          type: "PLACE_STARTING_SETTLEMENT",
+          payload,
+          clientTimeMs: performance.now(),
+        })
+        return
+      }
+
+      if (game.phase === "RUNNING") {
+        if (hasSettlement) return
+
+        const payload: BuildSettlementPayload = { tileId: tile.id }
+        dispatchActionForLocalPlayer({
+          type: "BUILD_SETTLEMENT",
+          payload,
+          clientTimeMs: performance.now(),
+        })
+        return
+      }
     },
     [game, localPlayerId, dispatchActionForLocalPlayer],
   )
@@ -297,6 +321,11 @@ export const GameRoot: React.FC = () => {
         settlements={game.settlements}
         onTileClick={handleTileClick}
       />
+
+      <p style={{ fontSize: "0.85rem", color: "#bbb" }}>
+        Build new settlement: 100 Food, 100 Wood, 50 Stone (click an empty
+        non-water tile during RUNNING).
+      </p>
 
       <SettlementRolesPanel
         game={game}
