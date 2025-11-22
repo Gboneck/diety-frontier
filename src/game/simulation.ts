@@ -10,6 +10,7 @@ import type {
   AnyPlayerAction,
   ActionType,
   PlaceStartingSettlementPayload,
+  BuildSettlementPayload,
   TickPayload,
   AllocateRolesPayload,
   RaidSettlementPayload,
@@ -29,6 +30,10 @@ function getPlayer(state: GameState, playerId: PlayerId): Player | undefined {
 
 function countSettlementsForPlayer(state: GameState, playerId: PlayerId): number {
   return state.settlements.filter((s) => s.owner === playerId).length
+}
+
+function playerHasSettlement(state: GameState, playerId: PlayerId): boolean {
+  return state.settlements.some((s) => s.owner === playerId)
 }
 
 function findTileById(state: GameState, tileId: string): Tile | undefined {
@@ -201,6 +206,53 @@ export function computeNpcActions(state: GameState): AnyPlayerAction[] {
               targetSettlementId: target.id,
               raiderPercent: 50,
             },
+            clientTimeMs: state.currentTimeMs,
+          })
+        }
+      }
+    }
+
+    // --- 4.5: Maybe found a new settlement (expand) ---
+    if (state.phase === "RUNNING") {
+      const settlementsAfter = state.settlements.filter((s) => s.owner === player.id)
+      const maxSettlementsForNpc = 4
+
+      const food = player.resources.Food ?? 0
+      const wood = player.resources.Wood ?? 0
+      const stone = player.resources.Stone ?? 0
+
+      const canAffordNewSettlement = food >= 100 && wood >= 100 && stone >= 50
+      const wantMoreSettlements = settlementsAfter.length < maxSettlementsForNpc
+
+      if (canAffordNewSettlement && wantMoreSettlements) {
+        const candidateTiles: Tile[] = []
+
+        for (const s of settlementsAfter) {
+          const sTile = findTileById(state, s.tileId)
+          if (!sTile) continue
+
+          for (const tile of state.tiles) {
+            if (tile.terrain === "Water" || tile.settlementId) continue
+            const dist = hexDistance(sTile.coord, tile.coord)
+            if (dist <= 3) {
+              candidateTiles.push(tile)
+            }
+          }
+        }
+
+        const uniqueCandidates = Array.from(
+          new Map(candidateTiles.map((t) => [t.id, t])).values(),
+        )
+
+        if (uniqueCandidates.length > 0) {
+          const tile =
+            uniqueCandidates[Math.floor(Math.random() * uniqueCandidates.length)]
+
+          actions.push({
+            id: nextId(),
+            playerId: player.id,
+            type: "BUILD_SETTLEMENT",
+            payload: { tileId: tile.id },
             clientTimeMs: state.currentTimeMs,
           })
         }
@@ -671,11 +723,18 @@ export function reduceGameState(
 
       state.players = updatedPlayers
 
-      const allPlayersHaveSettlement = state.players.every((p) =>
-        state.settlements.some((s) => s.owner === p.id),
+      const humanPlayers = state.players.filter((p) => !p.isNpc)
+      const npcPlayers = state.players.filter((p) => p.isNpc)
+
+      const anyHumanReady = humanPlayers.some((p) =>
+        playerHasSettlement(state, p.id),
       )
 
-      if (allPlayersHaveSettlement && state.phase !== "RUNNING") {
+      const allNpcsReady =
+        npcPlayers.length === 0 ||
+        npcPlayers.every((p) => playerHasSettlement(state, p.id))
+
+      if (anyHumanReady && allNpcsReady && state.phase !== "RUNNING") {
         state.phase = "RUNNING"
       }
 
@@ -686,7 +745,90 @@ export function reduceGameState(
     }
 
     case "BUILD_SETTLEMENT": {
-      // TODO: implement building rules, resource costs, VP gain
+      const payload = action.payload as BuildSettlementPayload | undefined
+      if (!payload) return state
+
+      if (state.phase !== "RUNNING") {
+        return state
+      }
+
+      const tile = findTileById(state, payload.tileId)
+      if (!tile) return state
+
+      if (tile.terrain === "Water" || tile.settlementId) {
+        return state
+      }
+
+      const player = getPlayer(state, action.playerId)
+      if (!player) return state
+
+      const mySettlements = state.settlements.filter((s) => s.owner === player.id)
+      if (mySettlements.length === 0) {
+        return state
+      }
+
+      const withinRange = mySettlements.some((s) => {
+        const sTile = findTileById(state, s.tileId)
+        if (!sTile) return false
+        const dist = hexDistance(sTile.coord, tile.coord)
+        return dist <= 3
+      })
+
+      if (!withinRange) {
+        return state
+      }
+
+      const cost: Partial<Record<ResourceType, number>> = {
+        Food: 100,
+        Wood: 100,
+        Stone: 50,
+      }
+
+      const food = player.resources.Food ?? 0
+      const wood = player.resources.Wood ?? 0
+      const stone = player.resources.Stone ?? 0
+
+      if (food < (cost.Food ?? 0) || wood < (cost.Wood ?? 0) || stone < (cost.Stone ?? 0)) {
+        return state
+      }
+
+      state.players = state.players.map((p) => {
+        if (p.id !== player.id) return p
+        const newResources = subtractResources(p.resources, cost)
+        return {
+          ...p,
+          resources: newResources,
+        }
+      })
+
+      const settlement: Settlement = {
+        id: nextId(),
+        owner: action.playerId,
+        tileId: tile.id,
+        population: 5,
+        workers: 3,
+        worshippers: 1,
+        defenders: 1,
+        level: 1,
+        populationCap: 15,
+        growthProgress: 0,
+      }
+
+      const updatedSettlements = [...state.settlements, settlement]
+      const updatedTiles = state.tiles.map((t) =>
+        t.id === tile.id
+          ? { ...t, settlementId: settlement.id, controller: action.playerId }
+          : t,
+      )
+
+      state = {
+        ...state,
+        settlements: updatedSettlements,
+        tiles: updatedTiles,
+      }
+
+      state.currentTimeMs = Math.max(state.currentTimeMs, action.clientTimeMs)
+
       return state
     }
 
