@@ -8,7 +8,7 @@ export type TerrainType =
   | "Water"
   | "FertileField"
 
-export type PlayerId = "PLAYER_1" | "PLAYER_2"
+export type PlayerId = string
 
 export type DeityPowerType = "BLESSED_HARVEST" | "INSPIRED_WORSHIP"
 
@@ -52,6 +52,9 @@ export interface Player {
   victoryPoints: number
   belief: number
   maxBeliefEver: number
+
+  // Indicates that this player is controlled by the NPC AI
+  isNpc?: boolean
 }
 
 export interface SettlementBuff {

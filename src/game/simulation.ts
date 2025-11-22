@@ -16,6 +16,7 @@ import type {
   UseDeityPowerPayload,
   SettlementBuff,
   UpgradeSettlementPayload,
+  DeityPowerType,
 } from "./types"
 
 // Utility to create ids (simple for now; we can swap to uuid later)
@@ -97,18 +98,134 @@ function assignTileControllers(state: GameState): GameState {
   }
 }
 
+export function computeNpcActions(state: GameState): AnyPlayerAction[] {
+  const actions: AnyPlayerAction[] = []
+
+  for (const player of state.players) {
+    if (!player.isNpc) continue
+
+    // --- 4.1: Ensure NPC has a starting settlement ---
+    const mySettlements = state.settlements.filter((s) => s.owner === player.id)
+
+    if (mySettlements.length === 0) {
+      const availableTiles = state.tiles.filter(
+        (t) => t.terrain !== "Water" && !t.settlementId,
+      )
+      if (availableTiles.length === 0) {
+        continue
+      }
+
+      const tile =
+        availableTiles[Math.floor(Math.random() * availableTiles.length)]
+
+      actions.push({
+        id: nextId(),
+        playerId: player.id,
+        type: "PLACE_STARTING_SETTLEMENT",
+        payload: { tileId: tile.id },
+        clientTimeMs: state.currentTimeMs,
+      })
+
+      // Don’t plan more for this NPC until next tick
+      continue
+    }
+
+    if (state.phase !== "RUNNING") {
+      continue
+    }
+
+    // Refresh mySettlements in RUNNING
+    const settlements = state.settlements.filter((s) => s.owner === player.id)
+
+    // --- 4.2: Maybe upgrade a settlement ---
+    const wood = player.resources.Wood ?? 0
+    const stone = player.resources.Stone ?? 0
+    const canUpgrade = wood >= 50 && stone >= 50
+
+    if (canUpgrade && settlements.length > 0) {
+      const target = [...settlements].sort((a, b) => a.level - b.level)[0]
+
+      actions.push({
+        id: nextId(),
+        playerId: player.id,
+        type: "UPGRADE_SETTLEMENT",
+        payload: { settlementId: target.id },
+        clientTimeMs: state.currentTimeMs,
+      })
+    }
+
+    // --- 4.3: Maybe cast a deity power ---
+    const belief = player.belief ?? 0
+    if (belief >= 20 && settlements.length > 0) {
+      const target = [...settlements].sort((a, b) => b.population - a.population)[0]
+
+      const power: DeityPowerType =
+        Math.random() < 0.5 ? "BLESSED_HARVEST" : "INSPIRED_WORSHIP"
+
+      actions.push({
+        id: nextId(),
+        playerId: player.id,
+        type: "USE_DEITY_POWER",
+        payload: {
+          power,
+          settlementId: target.id,
+        },
+        clientTimeMs: state.currentTimeMs,
+      })
+    }
+
+    // --- 4.4: Maybe launch a raid ---
+    const enemySettlements = state.settlements.filter(
+      (s) => s.owner !== player.id,
+    )
+    if (enemySettlements.length > 0 && settlements.length > 0) {
+      const raidChance = 0.15 // 15% per tick
+
+      const totalDefenders = settlements.reduce(
+        (sum, s) => sum + s.defenders,
+        0,
+      )
+
+      if (totalDefenders >= 5 && Math.random() < raidChance) {
+        const from = settlements.find((s) => s.defenders >= 3)
+        const target =
+          enemySettlements[Math.floor(Math.random() * enemySettlements.length)]
+
+        if (from && target) {
+          actions.push({
+            id: nextId(),
+            playerId: player.id,
+            type: "RAID_SETTLEMENT",
+            payload: {
+              fromSettlementId: from.id,
+              targetSettlementId: target.id,
+              raiderPercent: 50,
+            },
+            clientTimeMs: state.currentTimeMs,
+          })
+        }
+      }
+    }
+  }
+
+  return actions
+}
+
 // Count controlled tiles per player
 function countControlledTiles(state: GameState): Record<PlayerId, number> {
-  const result: Record<PlayerId, number> = {
-    PLAYER_1: 0,
-    PLAYER_2: 0,
+  const result: Record<PlayerId, number> = {}
+
+  for (const player of state.players) {
+    result[player.id] = 0
   }
 
   for (const tile of state.tiles) {
-    if (!tile.controller) continue
-    if (result[tile.controller] != null) {
-      result[tile.controller] += 1
+    const owner = tile.controller
+    if (!owner) continue
+    if (result[owner] == null) {
+      result[owner] = 0
     }
+    result[owner] += 1
   }
 
   return result
@@ -195,8 +312,9 @@ export function createInitialGameState(gameId: string): GameState {
   const tiles: Tile[] = createSmallHexMap()
 
   const players: Player[] = [
-    createPlayer("PLAYER_1", "Player 1"),
-    createPlayer("PLAYER_2", "Player 2"),
+    createPlayer("PLAYER_1", "Player 1", false),
+    createPlayer("PLAYER_2", "Player 2", false),
+    createPlayer("NPC_1", "Ashen Covenant", true),
   ]
 
   return {
@@ -242,7 +360,7 @@ function pickTerrainForCoord(q: number, r: number): TerrainType {
   return "Water"
 }
 
-function createPlayer(id: PlayerId, name: string): Player {
+function createPlayer(id: PlayerId, name: string, isNpc = false): Player {
   const resources: Record<ResourceType, number> = {
     Food: 0,
     Wood: 0,
@@ -258,6 +376,7 @@ function createPlayer(id: PlayerId, name: string): Player {
     victoryPoints: 0,
     belief: 0,
     maxBeliefEver: 0,
+    isNpc,
   }
 }
 
@@ -310,9 +429,9 @@ export function reduceGameState(
       }
 
       // Initialize income per player
-      const incomes: Record<PlayerId, Record<ResourceType, number>> = {
-        PLAYER_1: emptyResourceRecord(),
-        PLAYER_2: emptyResourceRecord(),
+      const incomes: Record<PlayerId, Record<ResourceType, number>> = {}
+      for (const player of state.players) {
+        incomes[player.id] = emptyResourceRecord()
       }
 
       // Accumulate income from each settlement
@@ -412,18 +531,16 @@ export function reduceGameState(
 
       const UPKEEP_PER_PERSON_PER_SECOND = 0.05
 
-      const starvingPlayers: Record<PlayerId, boolean> = {
-        PLAYER_1: false,
-        PLAYER_2: false,
-      }
+      const starvingPlayers: Record<PlayerId, boolean> = {}
+      const popByPlayer: Record<PlayerId, number> = {}
 
-      const popByPlayer: Record<PlayerId, number> = {
-        PLAYER_1: 0,
-        PLAYER_2: 0,
+      for (const player of state.players) {
+        starvingPlayers[player.id] = false
+        popByPlayer[player.id] = 0
       }
 
       for (const s of state.settlements) {
-        popByPlayer[s.owner] += s.population
+        popByPlayer[s.owner] = (popByPlayer[s.owner] ?? 0) + s.population
       }
 
       state.players = state.players.map((player) => {
@@ -490,11 +607,6 @@ export function reduceGameState(
     }
 
     case "PLACE_STARTING_SETTLEMENT": {
-      if (state.phase !== "LOBBY") {
-        // Starting settlements only during lobby
-        return state
-      }
-
       const player = getPlayer(state, action.playerId)
       if (!player) return state
 
@@ -559,11 +671,11 @@ export function reduceGameState(
 
       state.players = updatedPlayers
 
-      // If both players now have a starting settlement, move to RUNNING phase
-      const p1Has = countSettlementsForPlayer(state, "PLAYER_1") > 0
-      const p2Has = countSettlementsForPlayer(state, "PLAYER_2") > 0
+      const allPlayersHaveSettlement = state.players.every((p) =>
+        state.settlements.some((s) => s.owner === p.id),
+      )
 
-      if (p1Has && p2Has && state.phase === "LOBBY") {
+      if (allPlayersHaveSettlement && state.phase !== "RUNNING") {
         state.phase = "RUNNING"
       }
 
