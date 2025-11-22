@@ -12,6 +12,15 @@ export type PlayerId = string
 
 export type DeityPowerType = "BLESSED_HARVEST" | "INSPIRED_WORSHIP"
 
+export type Stance = "AGGRESSIVE" | "DEFENSIVE" | "PASSIVE"
+
+export interface FactionPolicy {
+  workersPercent: number // 0–100
+  worshippersPercent: number // 0–100
+  defendersPercent: number // 0–100
+  stance: Stance
+}
+
 // Axial hex coordinates (for a hex grid)
 export interface HexCoord {
   q: number
@@ -54,6 +63,7 @@ export interface Player {
   maxBeliefEver: number
 
   // Indicates that this player is controlled by the NPC AI
+  policy: FactionPolicy
   isNpc?: boolean
 }
 
@@ -90,6 +100,7 @@ export type ActionType =
   | "RAID_SETTLEMENT"
   | "USE_DEITY_POWER"
   | "UPGRADE_SETTLEMENT"
+  | "SET_POLICY"
 
 export interface PlayerAction<TPayload = unknown> {
   id: string // client-generated UUID
@@ -137,6 +148,13 @@ export interface UpgradeSettlementPayload {
   settlementId: string
 }
 
+export interface SetPolicyPayload {
+  workersPercent: number
+  worshippersPercent: number
+  defendersPercent: number
+  stance: Stance
+}
+
 // Union of payloads
 export type AnyActionPayload =
   | PlaceStartingSettlementPayload
@@ -146,6 +164,7 @@ export type AnyActionPayload =
   | RaidSettlementPayload
   | UseDeityPowerPayload
   | UpgradeSettlementPayload
+  | SetPolicyPayload
   | undefined
 
 export type AnyPlayerAction = PlayerAction<AnyActionPayload>

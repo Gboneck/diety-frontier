@@ -2,17 +2,16 @@ import React, { useCallback, useState } from "react"
 import { HexBoard } from "./HexBoard"
 import { useWsGame } from "../state/useWsGame"
 import type {
-  AllocateRolesPayload,
   DeityPowerType,
   BuildSettlementPayload,
   PlaceStartingSettlementPayload,
-  RaidSettlementPayload,
   UseDeityPowerPayload,
   UpgradeSettlementPayload,
+  FactionPolicy,
+  SetPolicyPayload,
 } from "../game/types"
-import { SettlementRolesPanel } from "./SettlementRolesPanel"
-import { CombatPanel } from "./CombatPanel"
 import { DeityPowersPanel } from "./DeityPowersPanel"
+import { FactionPolicyPanel } from "./FactionPolicyPanel"
 
 export const GameRoot: React.FC = () => {
   const {
@@ -70,54 +69,6 @@ export const GameRoot: React.FC = () => {
     [game, localPlayerId, dispatchActionForLocalPlayer],
   )
 
-  const handleUpdateRoles = useCallback(
-    (args: {
-      settlementId: string
-      workersPercent: number
-      worshippersPercent: number
-      defendersPercent: number
-    }) => {
-      if (!game || !localPlayerId) return
-
-      const payload: AllocateRolesPayload = {
-        settlementId: args.settlementId,
-        workersPercent: args.workersPercent,
-        worshippersPercent: args.worshippersPercent,
-        defendersPercent: args.defendersPercent,
-      }
-
-      dispatchActionForLocalPlayer({
-        type: "ALLOCATE_ROLES",
-        payload,
-        clientTimeMs: performance.now(),
-      })
-    },
-    [game, localPlayerId, dispatchActionForLocalPlayer],
-  )
-
-  const handleRaid = useCallback(
-    (args: {
-      fromSettlementId: string
-      targetSettlementId: string
-      raiderPercent: number
-    }) => {
-      if (!game || !localPlayerId) return
-
-      const payload: RaidSettlementPayload = {
-        fromSettlementId: args.fromSettlementId,
-        targetSettlementId: args.targetSettlementId,
-        raiderPercent: args.raiderPercent,
-      }
-
-      dispatchActionForLocalPlayer({
-        type: "RAID_SETTLEMENT",
-        payload,
-        clientTimeMs: performance.now(),
-      })
-    },
-    [game, localPlayerId, dispatchActionForLocalPlayer],
-  )
-
   const handleCastPower = useCallback(
     (args: { power: DeityPowerType; settlementId: string }) => {
       if (!game || !localPlayerId) return
@@ -129,6 +80,26 @@ export const GameRoot: React.FC = () => {
 
       dispatchActionForLocalPlayer({
         type: "USE_DEITY_POWER",
+        payload,
+        clientTimeMs: performance.now(),
+      })
+    },
+    [game, localPlayerId, dispatchActionForLocalPlayer],
+  )
+
+  const handleUpdatePolicy = React.useCallback(
+    (policy: FactionPolicy) => {
+      if (!game || !localPlayerId) return
+
+      const payload: SetPolicyPayload = {
+        workersPercent: policy.workersPercent,
+        worshippersPercent: policy.worshippersPercent,
+        defendersPercent: policy.defendersPercent,
+        stance: policy.stance,
+      }
+
+      dispatchActionForLocalPlayer({
+        type: "SET_POLICY",
         payload,
         clientTimeMs: performance.now(),
       })
@@ -327,16 +298,10 @@ export const GameRoot: React.FC = () => {
         non-water tile during RUNNING).
       </p>
 
-      <SettlementRolesPanel
+      <FactionPolicyPanel
         game={game}
         localPlayerId={localPlayerId}
-        onUpdateRoles={handleUpdateRoles}
-      />
-
-      <CombatPanel
-        game={game}
-        localPlayerId={localPlayerId}
-        onRaid={handleRaid}
+        onUpdatePolicy={handleUpdatePolicy}
       />
 
       <DeityPowersPanel
