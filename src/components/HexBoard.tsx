@@ -7,9 +7,20 @@ export interface HexBoardProps {
   onTileClick?: (tileId: string) => void
 }
 
-const ownerColor: Record<PlayerId, string> = {
+const ownerColor: Record<string, string> = {
   PLAYER_1: "#ffcc00",
   PLAYER_2: "#00ccff",
+  NPC_1: "#ff66cc",
+}
+
+function getOwnerColor(owner: PlayerId): string {
+  if (ownerColor[owner]) return ownerColor[owner]
+
+  const palette = ["#ff9966", "#66ffcc", "#cc99ff", "#99ccff", "#ffcc66"]
+  const hash = owner
+    .split("")
+    .reduce((acc, char) => acc + char.charCodeAt(0), 0)
+  return palette[hash % palette.length]
 }
 
 function terrainColor(terrain: Tile["terrain"]): string {
@@ -103,7 +114,7 @@ export const HexBoard: React.FC<HexBoardProps> = ({
                   width: 18,
                   height: 18,
                   borderRadius: "50%",
-                  backgroundColor: ownerColor[settlement.owner],
+                  backgroundColor: getOwnerColor(settlement.owner),
                   border: "2px solid #000",
                 }}
                 title={settlement.owner}

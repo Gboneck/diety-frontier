@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react"
 import type { AnyPlayerAction, GameState, PlayerId } from "../game/types"
-import { createInitialGameState, reduceGameState } from "../game/simulation"
+import {
+  computeNpcActions,
+  createInitialGameState,
+  reduceGameState,
+} from "../game/simulation"
 import { WsClient } from "../net/wsClient"
 import type { WsMessage } from "../net/wsClient"
 
@@ -67,16 +71,21 @@ export function useWsGame(): UseWsGameResult {
           clientTimeMs: now,
         }
 
-        const nextState = reduceGameState(prev, tickAction)
+        let stateAfterTick = reduceGameState(prev, tickAction)
+
+        const npcActions = computeNpcActions(stateAfterTick)
+        for (const action of npcActions) {
+          stateAfterTick = reduceGameState(stateAfterTick, action)
+        }
 
         // Broadcast authoritative state to all clients
         wsClient.send({
           type: "state",
           roomId,
-          state: nextState,
+          state: stateAfterTick,
         })
 
-        return nextState
+        return stateAfterTick
       })
     }, 1000) // one tick per second
 
