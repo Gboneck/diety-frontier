@@ -18,6 +18,9 @@ import type {
   SettlementBuff,
   UpgradeSettlementPayload,
   DeityPowerType,
+  FactionPolicy,
+  SetPolicyPayload,
+  Stance,
 } from "./types"
 
 // Utility to create ids (simple for now; we can swap to uuid later)
@@ -107,154 +110,177 @@ export function computeNpcActions(state: GameState): AnyPlayerAction[] {
   const actions: AnyPlayerAction[] = []
 
   for (const player of state.players) {
-    if (!player.isNpc) continue
+    const policy = player.policy
 
-    // --- 4.1: Ensure NPC has a starting settlement ---
     const mySettlements = state.settlements.filter((s) => s.owner === player.id)
 
-    if (mySettlements.length === 0) {
-      const availableTiles = state.tiles.filter(
-        (t) => t.terrain !== "Water" && !t.settlementId,
-      )
-      if (availableTiles.length === 0) {
-        continue
-      }
-
-      const tile =
-        availableTiles[Math.floor(Math.random() * availableTiles.length)]
-
-      actions.push({
-        id: nextId(),
-        playerId: player.id,
-        type: "PLACE_STARTING_SETTLEMENT",
-        payload: { tileId: tile.id },
-        clientTimeMs: state.currentTimeMs,
-      })
-
-      // Don’t plan more for this NPC until next tick
-      continue
-    }
-
-    if (state.phase !== "RUNNING") {
-      continue
-    }
-
-    // Refresh mySettlements in RUNNING
-    const settlements = state.settlements.filter((s) => s.owner === player.id)
-
-    // --- 4.2: Maybe upgrade a settlement ---
-    const wood = player.resources.Wood ?? 0
-    const stone = player.resources.Stone ?? 0
-    const canUpgrade = wood >= 50 && stone >= 50
-
-    if (canUpgrade && settlements.length > 0) {
-      const target = [...settlements].sort((a, b) => a.level - b.level)[0]
-
-      actions.push({
-        id: nextId(),
-        playerId: player.id,
-        type: "UPGRADE_SETTLEMENT",
-        payload: { settlementId: target.id },
-        clientTimeMs: state.currentTimeMs,
-      })
-    }
-
-    // --- 4.3: Maybe cast a deity power ---
-    const belief = player.belief ?? 0
-    if (belief >= 20 && settlements.length > 0) {
-      const target = [...settlements].sort((a, b) => b.population - a.population)[0]
-
-      const power: DeityPowerType =
-        Math.random() < 0.5 ? "BLESSED_HARVEST" : "INSPIRED_WORSHIP"
-
-      actions.push({
-        id: nextId(),
-        playerId: player.id,
-        type: "USE_DEITY_POWER",
-        payload: {
-          power,
-          settlementId: target.id,
-        },
-        clientTimeMs: state.currentTimeMs,
-      })
-    }
-
-    // --- 4.4: Maybe launch a raid ---
-    const enemySettlements = state.settlements.filter(
-      (s) => s.owner !== player.id,
-    )
-    if (enemySettlements.length > 0 && settlements.length > 0) {
-      const raidChance = 0.15 // 15% per tick
-
-      const totalDefenders = settlements.reduce(
-        (sum, s) => sum + s.defenders,
-        0,
-      )
-
-      if (totalDefenders >= 5 && Math.random() < raidChance) {
-        const from = settlements.find((s) => s.defenders >= 3)
-        const target =
-          enemySettlements[Math.floor(Math.random() * enemySettlements.length)]
-
-        if (from && target) {
+    // --- NPC-only behaviors: starting settlement, upgrades, powers, expansion ---
+    if (player.isNpc) {
+      if (mySettlements.length === 0) {
+        const availableTiles = state.tiles.filter(
+          (t) => t.terrain !== "Water" && !t.settlementId,
+        )
+        if (availableTiles.length > 0) {
+          const tile =
+            availableTiles[Math.floor(Math.random() * availableTiles.length)]
           actions.push({
             id: nextId(),
             playerId: player.id,
-            type: "RAID_SETTLEMENT",
+            type: "PLACE_STARTING_SETTLEMENT",
+            payload: { tileId: tile.id },
+            clientTimeMs: state.currentTimeMs,
+          })
+          continue
+        }
+      }
+
+      if (state.phase === "RUNNING" && mySettlements.length > 0) {
+        const settlements = state.settlements.filter((s) => s.owner === player.id)
+
+        const wood = player.resources.Wood ?? 0
+        const stone = player.resources.Stone ?? 0
+        const canUpgrade = wood >= 50 && stone >= 50
+
+        if (canUpgrade && settlements.length > 0) {
+          const target = [...settlements].sort((a, b) => a.level - b.level)[0]
+
+          actions.push({
+            id: nextId(),
+            playerId: player.id,
+            type: "UPGRADE_SETTLEMENT",
+            payload: { settlementId: target.id },
+            clientTimeMs: state.currentTimeMs,
+          })
+        }
+
+        const belief = player.belief ?? 0
+        if (belief >= 20 && settlements.length > 0) {
+          const target = [...settlements].sort(
+            (a, b) => b.population - a.population,
+          )[0]
+
+          const power: DeityPowerType =
+            Math.random() < 0.5 ? "BLESSED_HARVEST" : "INSPIRED_WORSHIP"
+
+          actions.push({
+            id: nextId(),
+            playerId: player.id,
+            type: "USE_DEITY_POWER",
             payload: {
-              fromSettlementId: from.id,
-              targetSettlementId: target.id,
-              raiderPercent: 50,
+              power,
+              settlementId: target.id,
             },
             clientTimeMs: state.currentTimeMs,
           })
         }
+
+        const settlementsAfter = state.settlements.filter(
+          (s) => s.owner === player.id,
+        )
+        const maxSettlementsForNpc = 4
+
+        const food = player.resources.Food ?? 0
+        const woodForBuild = player.resources.Wood ?? 0
+        const stoneForBuild = player.resources.Stone ?? 0
+
+        const canAffordNewSettlement =
+          food >= 100 && woodForBuild >= 100 && stoneForBuild >= 50
+        const wantMoreSettlements =
+          settlementsAfter.length < maxSettlementsForNpc
+
+        if (canAffordNewSettlement && wantMoreSettlements) {
+          const candidateTiles: Tile[] = []
+
+          for (const s of settlementsAfter) {
+            const sTile = findTileById(state, s.tileId)
+            if (!sTile) continue
+
+            for (const tile of state.tiles) {
+              if (tile.terrain === "Water" || tile.settlementId) continue
+              const dist = hexDistance(sTile.coord, tile.coord)
+              if (dist <= 3) {
+                candidateTiles.push(tile)
+              }
+            }
+          }
+
+          const uniqueCandidates = Array.from(
+            new Map(candidateTiles.map((t) => [t.id, t])).values(),
+          )
+
+          if (uniqueCandidates.length > 0) {
+            const tile =
+              uniqueCandidates[Math.floor(Math.random() * uniqueCandidates.length)]
+
+            actions.push({
+              id: nextId(),
+              playerId: player.id,
+              type: "BUILD_SETTLEMENT",
+              payload: { tileId: tile.id },
+              clientTimeMs: state.currentTimeMs,
+            })
+          }
+        }
       }
     }
 
-    // --- 4.5: Maybe found a new settlement (expand) ---
-    if (state.phase === "RUNNING") {
-      const settlementsAfter = state.settlements.filter((s) => s.owner === player.id)
-      const maxSettlementsForNpc = 4
+    if (state.phase === "RUNNING" && mySettlements.length > 0) {
+      const stance: Stance = policy?.stance ?? "DEFENSIVE"
 
-      const food = player.resources.Food ?? 0
-      const wood = player.resources.Wood ?? 0
-      const stone = player.resources.Stone ?? 0
+      let raidChance = 0
+      let minDefendersForRaid = 5
+      let commitPercent = 50
 
-      const canAffordNewSettlement = food >= 100 && wood >= 100 && stone >= 50
-      const wantMoreSettlements = settlementsAfter.length < maxSettlementsForNpc
+      switch (stance) {
+        case "AGGRESSIVE":
+          raidChance = 0.3
+          minDefendersForRaid = 4
+          commitPercent = 70
+          break
+        case "DEFENSIVE":
+          raidChance = 0.1
+          minDefendersForRaid = 8
+          commitPercent = 40
+          break
+        case "PASSIVE":
+          raidChance = 0
+          break
+      }
 
-      if (canAffordNewSettlement && wantMoreSettlements) {
-        const candidateTiles: Tile[] = []
-
-        for (const s of settlementsAfter) {
-          const sTile = findTileById(state, s.tileId)
-          if (!sTile) continue
-
-          for (const tile of state.tiles) {
-            if (tile.terrain === "Water" || tile.settlementId) continue
-            const dist = hexDistance(sTile.coord, tile.coord)
-            if (dist <= 3) {
-              candidateTiles.push(tile)
-            }
-          }
-        }
-
-        const uniqueCandidates = Array.from(
-          new Map(candidateTiles.map((t) => [t.id, t])).values(),
+      if (raidChance > 0) {
+        const totalDefenders = mySettlements.reduce(
+          (sum, s) => sum + s.defenders,
+          0,
         )
 
-        if (uniqueCandidates.length > 0) {
-          const tile =
-            uniqueCandidates[Math.floor(Math.random() * uniqueCandidates.length)]
+        const enemySettlements = state.settlements.filter(
+          (s) => s.owner !== player.id,
+        )
 
-          actions.push({
-            id: nextId(),
-            playerId: player.id,
-            type: "BUILD_SETTLEMENT",
-            payload: { tileId: tile.id },
-            clientTimeMs: state.currentTimeMs,
-          })
+        if (
+          enemySettlements.length > 0 &&
+          totalDefenders >= minDefendersForRaid &&
+          Math.random() < raidChance
+        ) {
+          const from = mySettlements.find(
+            (s) => s.defenders >= minDefendersForRaid / 2,
+          )
+          const target =
+            enemySettlements[Math.floor(Math.random() * enemySettlements.length)]
+
+          if (from && target) {
+            actions.push({
+              id: nextId(),
+              playerId: player.id,
+              type: "RAID_SETTLEMENT",
+              payload: {
+                fromSettlementId: from.id,
+                targetSettlementId: target.id,
+                raiderPercent: commitPercent,
+              },
+              clientTimeMs: state.currentTimeMs,
+            })
+          }
         }
       }
     }
@@ -289,45 +315,21 @@ function computeRoleCountsFromPercents(
   worshippersPercent: number,
   defendersPercent: number,
 ): { workers: number; worshippers: number; defenders: number } {
-  if (population <= 0) {
+  const totalPercent = workersPercent + worshippersPercent + defendersPercent
+  if (totalPercent <= 0 || population <= 0) {
     return { workers: 0, worshippers: 0, defenders: 0 }
   }
 
-  // Clamp percentages to [0, 100]
-  const wP = Math.max(0, Math.min(100, workersPercent))
-  const wpP = Math.max(0, Math.min(100, worshippersPercent))
-  const dP = Math.max(0, Math.min(100, defendersPercent))
+  const norm = totalPercent / 100
 
-  const totalPercent = wP + wpP + dP
+  let workers = Math.floor((workersPercent / norm / 100) * population)
+  let worshippers = Math.floor((worshippersPercent / norm / 100) * population)
+  let defenders = Math.floor((defendersPercent / norm / 100) * population)
 
-  if (totalPercent <= 0) {
-    // Default: everyone works
-    return { workers: population, worshippers: 0, defenders: 0 }
-  }
-
-  // Compute raw counts based on relative percentages
-  const workersRaw = (population * wP) / totalPercent
-  const worshippersRaw = (population * wpP) / totalPercent
-  const defendersRaw = (population * dP) / totalPercent
-
-  let workers = Math.floor(workersRaw)
-  let worshippers = Math.floor(worshippersRaw)
-  let defenders = Math.floor(defendersRaw)
-
-  // Distribute any remaining population due to rounding
   let assigned = workers + worshippers + defenders
-  let remaining = population - assigned
-
-  while (remaining > 0) {
-    // Assign extra people in order: workers -> worshippers -> defenders
-    if (workers < Math.ceil(workersRaw)) {
-      workers++
-    } else if (worshippers < Math.ceil(worshippersRaw)) {
-      worshippers++
-    } else {
-      defenders++
-    }
-    remaining--
+  while (assigned < population) {
+    workers += 1
+    assigned += 1
   }
 
   return { workers, worshippers, defenders }
@@ -363,10 +365,22 @@ function subtractResources(
 export function createInitialGameState(gameId: string): GameState {
   const tiles: Tile[] = createSmallHexMap()
 
+  const defaultPolicy: FactionPolicy = {
+    workersPercent: 60,
+    worshippersPercent: 20,
+    defendersPercent: 20,
+    stance: "DEFENSIVE",
+  }
+
   const players: Player[] = [
-    createPlayer("PLAYER_1", "Player 1", false),
-    createPlayer("PLAYER_2", "Player 2", false),
-    createPlayer("NPC_1", "Ashen Covenant", true),
+    createPlayer("PLAYER_1", "Player 1", false, { ...defaultPolicy }),
+    createPlayer("PLAYER_2", "Player 2", false, { ...defaultPolicy }),
+    createPlayer("NPC_1", "Ashen Covenant", true, {
+      workersPercent: 50,
+      worshippersPercent: 30,
+      defendersPercent: 20,
+      stance: "AGGRESSIVE",
+    }),
   ]
 
   return {
@@ -412,7 +426,12 @@ function pickTerrainForCoord(q: number, r: number): TerrainType {
   return "Water"
 }
 
-function createPlayer(id: PlayerId, name: string, isNpc = false): Player {
+function createPlayer(
+  id: PlayerId,
+  name: string,
+  isNpc = false,
+  policy?: FactionPolicy,
+): Player {
   const resources: Record<ResourceType, number> = {
     Food: 0,
     Wood: 0,
@@ -428,6 +447,13 @@ function createPlayer(id: PlayerId, name: string, isNpc = false): Player {
     victoryPoints: 0,
     belief: 0,
     maxBeliefEver: 0,
+    policy:
+      policy ?? {
+        workersPercent: 60,
+        worshippersPercent: 20,
+        defendersPercent: 20,
+        stance: "DEFENSIVE",
+      },
     isNpc,
   }
 }
@@ -655,6 +681,43 @@ export function reduceGameState(
         return s
       })
 
+      // --- Auto role allocation from faction policy ---
+
+      state.settlements = state.settlements.map((settlement) => {
+        const player = getPlayer(state, settlement.owner)
+        if (!player) return settlement
+
+        const policy = player.policy
+        if (!policy) return settlement
+
+        const pop = settlement.population
+        if (pop <= 0) return settlement
+
+        const { workersPercent, worshippersPercent, defendersPercent } = policy
+
+        const { workers, worshippers, defenders } = computeRoleCountsFromPercents(
+          pop,
+          workersPercent,
+          worshippersPercent,
+          defendersPercent,
+        )
+
+        if (
+          workers === settlement.workers &&
+          worshippers === settlement.worshippers &&
+          defenders === settlement.defenders
+        ) {
+          return settlement
+        }
+
+        return {
+          ...settlement,
+          workers,
+          worshippers,
+          defenders,
+        }
+      })
+
       return state
     }
 
@@ -874,6 +937,31 @@ export function reduceGameState(
       // Advance time a bit (optional)
       state.currentTimeMs = Math.max(state.currentTimeMs, action.clientTimeMs)
 
+      return state
+    }
+
+    case "SET_POLICY": {
+      const payload = action.payload as SetPolicyPayload | undefined
+      if (!payload) return state
+
+      const clampPercent = (v: number) => Math.max(0, Math.min(100, v))
+
+      const newPolicy: FactionPolicy = {
+        workersPercent: clampPercent(payload.workersPercent),
+        worshippersPercent: clampPercent(payload.worshippersPercent),
+        defendersPercent: clampPercent(payload.defendersPercent),
+        stance: payload.stance,
+      }
+
+      state.players = state.players.map((p) => {
+        if (p.id !== action.playerId) return p
+        return {
+          ...p,
+          policy: newPolicy,
+        }
+      })
+
+      state.currentTimeMs = Math.max(state.currentTimeMs, action.clientTimeMs)
       return state
     }
 
